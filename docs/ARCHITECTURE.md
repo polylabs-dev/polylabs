@@ -64,12 +64,54 @@ User -> SPARK biometric -> WASM derives billing_token via HKDF("billing-v1")
      -> Tier status is broadcast per-product (product cannot see other products' tiers)
 ```
 
+### Individual Opt-In Bridge
+
+Individual users can choose to link their own products for a unified personal dashboard. This is entirely client-side — the backend never learns about the linkage unless the user publishes it.
+
+```fastlang
+lex_bridge polylabs_personal {
+    scope personal
+    owner spark_user_id
+
+    source esn/global/org/polylabs/data/{user_id_A}
+    source esn/global/org/polylabs/messenger/{user_id_B}
+    source esn/global/org/polylabs/mail/{user_id_C}
+    target esn/global/org/polylabs/personal/{bridge_id}
+
+    sign ml_dsa_87
+    signer_context "poly-bridge-v1"
+
+    allowed_fields [storage_used, message_count, unread_count, tier, device_count]
+    denied_fields [file_content, message_content, contact_list, encryption_keys]
+
+    revocable true
+    audit_stream local_only
+}
+```
+
+How it works:
+1. User derives a **bridge key** from SPARK master seed via `HKDF("poly-bridge-v1")` — a new, dedicated derivation context
+2. The bridge key signs **linkage proofs**: `sign(bridge_key, user_id_A || user_id_B || user_id_C)` — proving the same human controls all three product identities
+3. Linkage proofs are stored **client-side only** (ESLite, encrypted with the bridge key). The backend never receives them.
+4. The personal dashboard reads aggregate stats from each product's local ESLite cache and presents them in a unified view — all in WASM, no server round-trip
+5. If the user revokes the bridge, the linkage proofs are deleted from ESLite. Products return to fully isolated state.
+
+Key properties:
+- **Client-side only**: The bridge exists in WASM + ESLite. No server or lattice node learns that these identities belong to the same human.
+- **Cryptographically bound**: Only the SPARK master seed holder can create or revoke the bridge.
+- **Content-free**: The bridge passes usage aggregates (storage used, message count, etc.) but never content, contacts, or encryption keys.
+- **Revocable**: Deleting the bridge key material from ESLite severs the link permanently.
+- **No subpoena surface**: Since the linkage exists only on the user's device, there is nothing on any server to compel.
+
 ### Enterprise Opt-In Bridge
 
-Enterprise admins can choose to enable cross-product visibility:
+Enterprise admins can choose to enable cross-product visibility at the org level:
 
 ```fastlang
 lex_bridge polylabs_enterprise {
+    scope organization
+    owner org_admin
+
     source esn/global/org/polylabs/data
     source esn/global/org/polylabs/messenger
     target esn/global/org/polylabs/admin
@@ -86,7 +128,7 @@ lex_bridge polylabs_enterprise {
 }
 ```
 
-The bridge:
+The enterprise bridge:
 - Requires k-of-n admin witness attestation (3-of-5 admin keys must sign)
 - Only passes org-level aggregates (seat count, storage used, compliance status)
 - Explicitly denies user-level identifiers and content

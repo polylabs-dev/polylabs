@@ -15,7 +15,9 @@ Every product is cryptographically isolated from every other. A subpoena for one
 - Each product has its own metering graph instance
 - Billing uses blinded payment tokens — the backend cannot correlate which SPARK identity uses which products
 
-**Enterprise exception**: Enterprise customers can **choose** to opt in to cross-product visibility via a lex bridge gated by k-of-n admin witness attestation. The bridge is revocable, limited to org-level aggregates, and explicitly denies user-level identifiers and content.
+**Individual opt-in**: Any user can choose to link their products for a personal unified dashboard. The bridge is client-side only (WASM + ESLite, derived from `HKDF("poly-bridge-v1")`) — no server learns about the linkage. Revocable, content-free, zero subpoena surface.
+
+**Enterprise opt-in**: Enterprise customers can choose to enable org-level cross-product visibility via a lex bridge gated by k-of-n admin witness attestation — revocable, limited to org-level aggregates, explicitly denies user-level identifiers.
 
 ---
 
@@ -110,4 +112,4 @@ All products share the same codebase. Tier gating is handled by:
 | Billing | Self-service tiers (blinded tokens) | Custom contracts, seat-based |
 | Console | Product dashboards | Unified suite console + audit |
 | SDKs | Individual product SDKs | Suite SDK with admin hooks |
-| Cross-product | Zero-linkage (unconditional) | Zero-linkage default, opt-in lex bridge available |
+| Cross-product | Zero-linkage default, personal bridge opt-in (client-side only) | Zero-linkage default, personal + org-level bridge opt-in |
