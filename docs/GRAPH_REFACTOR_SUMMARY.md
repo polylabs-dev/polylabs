@@ -1,7 +1,7 @@
 # Poly Labs Suite — Graph/DAG Refactor Summary
 
 **Date**: February 2026
-**Platform**: eStream v0.8.3
+**Platform**: eStream v0.9.1
 **PolyKit**: v0.3.0
 
 ---
