@@ -21,7 +21,7 @@ circuits = [
 ]
 
 [component.requires]
-platform = "0.11.0"
+platform = "0.12.0"
 polykit = "0.4.0"
 
 [component.lex]

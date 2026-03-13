@@ -33,7 +33,7 @@ data ProductMeteringState : billing v1 {
     last_aggregated_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/billing/metering
+    govern lex global/org/polylabs/billing/metering
     cortex {
         redact [blinded_user_id]
         infer on_write
@@ -48,7 +48,7 @@ data MeteringIncrement : billing v1 {
     timestamp: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/billing/metering/increment
+    govern lex global/org/polylabs/billing/metering/increment
     cortex {
         redact [blinded_user_id]
         infer on_write
@@ -68,7 +68,7 @@ data MeteringQuota : billing v1 {
     lex_queries_limit: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/billing/metering/quota
+    govern lex global/org/polylabs/billing/metering/quota
     cortex {
         redact []
         infer on_write
@@ -87,9 +87,9 @@ circuit aggregate_product_metering(
     blinded_user_id: bytes(32),
     increments: list<MeteringIncrement>
 ) -> ProductMeteringState
-    lex esn/global/org/polylabs/billing/metering
-    precision B
-    observe metrics: [metering_aggregations, overage_events, dimensions_tracked, total_increments]
+    lex global/org/polylabs/billing/metering
+    @precision B
+    @observe metrics: [metering_aggregations, overage_events, dimensions_tracked, total_increments]
     monitor "overage_rate" { overage_events < 100 per 3600s }
     invariant "increments_nonempty" { len(increments) > 0 }
     invariant "all_same_product" {
@@ -160,9 +160,9 @@ circuit reset_metering_period(
     product_id: bytes(16),
     blinded_user_id: bytes(32)
 ) -> ProductMeteringState
-    lex esn/global/org/polylabs/billing/metering
-    precision C
-    observe metrics: [metering_resets]
+    lex global/org/polylabs/billing/metering
+    @precision C
+    @observe metrics: [metering_resets]
     invariant "state_exists" { eslite_exists("metering_states", concat(product_id, blinded_user_id)) }
     meters [compute_cycles]
     wasm_abi [eslite_query, eslite_insert, now]

@@ -65,7 +65,7 @@ data SubscriptionState : billing v1 {
     created_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/billing/subscription
+    govern lex global/org/polylabs/billing/subscription
     cortex {
         redact [blinded_token]
         infer on_write
@@ -81,7 +81,7 @@ data TierTransition : billing v1 {
     transitioned_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/billing/subscription/transition
+    govern lex global/org/polylabs/billing/subscription/transition
     cortex {
         redact []
         infer on_write
@@ -100,9 +100,9 @@ circuit transition_tier(
     target_tier: string,
     reason: string
 ) -> TierTransition
-    lex esn/global/org/polylabs/billing/subscription
-    precision C
-    observe metrics: [tier_transitions, promotions, downgrades, cancellations]
+    lex global/org/polylabs/billing/subscription
+    @precision C
+    @observe metrics: [tier_transitions, promotions, downgrades, cancellations]
     monitor "tier_churn" { tier_transitions < 50 per 3600s }
     invariant "subscription_exists" { eslite_exists("subscriptions", subscription_id) }
     invariant "valid_tier" {
@@ -145,9 +145,9 @@ circuit create_subscription(
     blinded_token: bytes(64),
     initial_tier: string
 ) -> SubscriptionState
-    lex esn/global/org/polylabs/billing/subscription
-    precision C
-    observe metrics: [subscriptions_created]
+    lex global/org/polylabs/billing/subscription
+    @precision C
+    @observe metrics: [subscriptions_created]
     invariant "valid_initial_tier" {
         initial_tier == "Free" or initial_tier == "Premium"
         or initial_tier == "Pro" or initial_tier == "Enterprise"

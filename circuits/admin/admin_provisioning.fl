@@ -1,15 +1,15 @@
-// Admin Provisioning — Product provisioning, lex namespace creation, scatter node allocation
+// Admin Provisioning — Product provisioning, lex namespace creation, distribute node allocation
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/admin/provisioning
 //   When a new product is onboarded or a tenant subscribes to a product,
-//   provisioning creates the isolated lex namespace, allocates scatter
+//   provisioning creates the isolated lex namespace, allocates distribute
 //   nodes for the product's data tier, and registers the product in the
 //   gateway route table. The full lifecycle: Request → Validating →
 //   Provisioning → Active | Failed.
 //
 // Isolation:
-//   Each provisioned product gets its own lex subtree, scatter allocation,
+//   Each provisioned product gets its own lex subtree, distribute allocation,
 //   and HKDF context. No provisioned product shares storage or namespace
 //   with any other — this is the infrastructure layer of zero-linkage.
 
@@ -28,7 +28,7 @@ data ProvisioningRequest : admin v1 {
     status: string,
 }
     store kv
-    govern lex esn/global/org/polylabs/admin/provisioning/request
+    govern lex global/org/polylabs/admin/provisioning/request
     cortex {
         redact [requested_by]
         infer on_write
@@ -48,7 +48,7 @@ data ProvisionedProduct : admin v1 {
     provisioned_by: bytes(32),
 }
     store kv
-    govern lex esn/global/org/polylabs/admin/provisioning/product
+    govern lex global/org/polylabs/admin/provisioning/product
     cortex {
         redact [provisioned_by]
         infer on_write
@@ -65,7 +65,7 @@ data ScatterAllocation : admin v1 {
     active: bool,
 }
     store kv
-    govern lex esn/global/org/polylabs/admin/provisioning/scatter
+    govern lex global/org/polylabs/admin/provisioning/distribute
     cortex {
         redact []
         infer on_write
@@ -89,9 +89,9 @@ circuit provision_product(
     hkdf_context: string,
     tier: string
 ) -> ProvisionedProduct
-    lex esn/global/org/polylabs/admin/provisioning
-    precision D
-    observe metrics: [products_provisioned, scatter_nodes_allocated, provisioning_latency_ms, provisioning_failures]
+    lex global/org/polylabs/admin/provisioning
+    @precision D
+    @observe metrics: [products_provisioned, scatter_nodes_allocated, provisioning_latency_ms, provisioning_failures]
     monitor "provisioning_rate" { products_provisioned < 50 per 3600s }
     invariant "product_not_already_provisioned" { not eslite_exists("provisioned_products", product_id) }
     invariant "namespace_unique" { not eslite_exists("lex_namespaces", lex_namespace) }
@@ -167,9 +167,9 @@ circuit deprovision_product(
     product_id: bytes(16),
     requested_by: bytes(32)
 ) -> bool
-    lex esn/global/org/polylabs/admin/provisioning
-    precision D
-    observe metrics: [products_deprovisioned, scatter_nodes_released]
+    lex global/org/polylabs/admin/provisioning
+    @precision D
+    @observe metrics: [products_deprovisioned, scatter_nodes_released]
     invariant "product_exists" { eslite_exists("provisioned_products", product_id) }
     invariant "requester_is_platform_admin" {
         check_admin_permission(requested_by, "deprovision_product")
@@ -189,9 +189,9 @@ circuit deprovision_product(
 }
 
 circuit list_provisioned_products() -> list<ProvisionedProduct>
-    lex esn/global/org/polylabs/admin/provisioning
-    precision B
-    observe metrics: [provisioning_queries]
+    lex global/org/polylabs/admin/provisioning
+    @precision B
+    @observe metrics: [provisioning_queries]
     invariant "always_true" { true }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_scan]
@@ -226,7 +226,7 @@ test golden "provision_new_product" {
         product_id: hex("bb" * 16)
         product_name: "polyfiles"
         requested_by: hex("cc" * 32)
-        lex_namespace: "esn/global/org/polylabs/files"
+        lex_namespace: "global/org/polylabs/files"
         scatter_node_count: 5
         hkdf_context: "poly-files-v1"
         tier: "Premium"
@@ -247,7 +247,7 @@ test golden "provision_free_tier" {
         product_id: hex("ee" * 16)
         product_name: "polymessenger"
         requested_by: hex("ff" * 32)
-        lex_namespace: "esn/global/org/polylabs/messenger"
+        lex_namespace: "global/org/polylabs/messenger"
         scatter_node_count: 3
         hkdf_context: "poly-messenger-v1"
         tier: "Free"

@@ -27,7 +27,7 @@ data BlindedVerification : billing v1 {
     expires_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/billing/blinded
+    govern lex global/org/polylabs/billing/blinded
     cortex {
         redact [blinded_token, token_commitment, tier_proof]
         infer on_write
@@ -42,7 +42,7 @@ data BlindingKeyState : billing v1 {
     rotated_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/billing/blinded/keys
+    govern lex global/org/polylabs/billing/blinded/keys
     cortex {
         redact [public_params]
         infer on_write
@@ -62,10 +62,10 @@ circuit verify_blinded_payment(
     tier_proof: bytes(128),
     claimed_tier: string
 ) -> BlindedVerification
-    lex esn/global/org/polylabs/billing/blinded
-    precision D
+    lex global/org/polylabs/billing/blinded
+    @precision D
     constant_time true
-    observe metrics: [verifications_attempted, verifications_succeeded, verifications_failed, verification_latency_us]
+    @observe metrics: [verifications_attempted, verifications_succeeded, verifications_failed, verification_latency_us]
     monitor "verification_failure_rate" { verifications_failed < 50 per 3600s }
     invariant "token_nonzero" { blinded_token != zero_bytes(64) }
     invariant "commitment_nonzero" { token_commitment != zero_bytes(32) }
@@ -108,9 +108,9 @@ circuit rotate_blinding_key(
     new_public_params: bytes(256),
     new_epoch: u64
 ) -> BlindingKeyState
-    lex esn/global/org/polylabs/billing/blinded
-    precision D
-    observe metrics: [key_rotations]
+    lex global/org/polylabs/billing/blinded
+    @precision D
+    @observe metrics: [key_rotations]
     invariant "epoch_monotonic" {
         eslite_query("blinding_keys", "active") == null
         or new_epoch > eslite_query("blinding_keys", "active").epoch

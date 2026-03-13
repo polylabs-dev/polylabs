@@ -29,7 +29,7 @@ data RouteConfig : gateway v1 {
     updated_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/gateway/router/config
+    govern lex global/org/polylabs/gateway/router/config
     cortex {
         redact []
         infer on_write
@@ -46,7 +46,7 @@ data RouteResult : gateway v1 {
     timestamp: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/gateway/router/result
+    govern lex global/org/polylabs/gateway/router/result
     cortex {
         redact []
         infer on_write
@@ -67,9 +67,9 @@ circuit route_request(
     payload_size: u64,
     wire_version: u16
 ) -> RouteResult
-    lex esn/global/org/polylabs/gateway/router
-    precision C
-    observe metrics: [requests_routed, requests_blocked, routing_latency_us, unknown_product_count]
+    lex global/org/polylabs/gateway/router
+    @precision C
+    @observe metrics: [requests_routed, requests_blocked, routing_latency_us, unknown_product_count]
     monitor "routing_throughput" { requests_routed < 100000 per 60s }
     invariant "payload_within_bounds" { payload_size <= eslite_query("route_configs", product_id).max_payload_bytes }
     invariant "wire_version_supported" { wire_version >= 1 and wire_version <= 3 }
@@ -124,9 +124,9 @@ circuit route_request(
 }
 
 circuit register_product_route(config: RouteConfig) -> bool
-    lex esn/global/org/polylabs/gateway/router
-    precision C
-    observe metrics: [routes_registered, route_updates]
+    lex global/org/polylabs/gateway/router
+    @precision C
+    @observe metrics: [routes_registered, route_updates]
     invariant "product_id_nonzero" { config.product_id != zero_bytes(16) }
     invariant "namespace_nonempty" { len(config.lex_namespace) > 0 }
     meters [compute_cycles]
@@ -161,7 +161,7 @@ test golden "route_known_product" {
         eslite_insert("route_configs", hex("aa" * 16), RouteConfig {
             product_id: hex("aa" * 16),
             product_name: "polyfiles",
-            lex_namespace: "esn/global/org/polylabs/files",
+            lex_namespace: "global/org/polylabs/files",
             wire_protocol_version: 1,
             max_payload_bytes: 67108864,
             enabled: true,
@@ -178,7 +178,7 @@ test golden "route_known_product" {
     }
     assert {
         result.routed == true
-        result.target_namespace == "esn/global/org/polylabs/files"
+        result.target_namespace == "global/org/polylabs/files"
         result.reason == "ok"
     }
 }

@@ -25,7 +25,7 @@ data AdminRole : admin v1 {
     created_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/admin/rbac/role
+    govern lex global/org/polylabs/admin/rbac/role
     cortex {
         redact []
         infer on_write
@@ -40,7 +40,7 @@ data AdminPermission : admin v1 {
     bit_position: u8,
 }
     store kv
-    govern lex esn/global/org/polylabs/admin/rbac/permission
+    govern lex global/org/polylabs/admin/rbac/permission
     cortex {
         redact []
         infer on_write
@@ -58,7 +58,7 @@ data RoleAssignment : admin v1 {
     active: bool,
 }
     store kv
-    govern lex esn/global/org/polylabs/admin/rbac/assignment
+    govern lex global/org/polylabs/admin/rbac/assignment
     cortex {
         redact [principal_id, assigned_by]
         infer on_write
@@ -106,9 +106,9 @@ circuit assign_role(
     assigned_by: bytes(32),
     ttl_seconds: u64
 ) -> RoleAssignment
-    lex esn/global/org/polylabs/admin/rbac
-    precision C
-    observe metrics: [roles_assigned, assignments_by_role, assignments_by_scope]
+    lex global/org/polylabs/admin/rbac
+    @precision C
+    @observe metrics: [roles_assigned, assignments_by_role, assignments_by_scope]
     monitor "role_assignment_rate" { roles_assigned < 100 per 3600s }
     invariant "role_exists" { eslite_exists("admin_roles", role_id) }
     invariant "assigner_is_admin" {
@@ -138,9 +138,9 @@ circuit revoke_role(
     assignment_id: bytes(16),
     revoked_by: bytes(32)
 ) -> bool
-    lex esn/global/org/polylabs/admin/rbac
-    precision C
-    observe metrics: [roles_revoked]
+    lex global/org/polylabs/admin/rbac
+    @precision C
+    @observe metrics: [roles_revoked]
     invariant "assignment_exists" { eslite_exists("role_assignments", assignment_id) }
     invariant "revoker_is_admin" {
         check_admin_permission(revoked_by, "revoke_role")
@@ -160,9 +160,9 @@ circuit check_permission(
     action: string,
     product_scope: bytes(16)
 ) -> bool
-    lex esn/global/org/polylabs/admin/rbac
-    precision B
-    observe metrics: [permission_checks, permission_grants, permission_denials]
+    lex global/org/polylabs/admin/rbac
+    @precision B
+    @observe metrics: [permission_checks, permission_grants, permission_denials]
     invariant "principal_nonzero" { principal_id != zero_bytes(32) }
     meters [compute_cycles]
     wasm_abi [eslite_scan, eslite_query, now]
@@ -186,9 +186,9 @@ circuit check_permission(
 }
 
 circuit initialize_platform_roles() -> bool
-    lex esn/global/org/polylabs/admin/rbac
-    precision C
-    observe metrics: [roles_initialized]
+    lex global/org/polylabs/admin/rbac
+    @precision C
+    @observe metrics: [roles_initialized]
     invariant "not_already_initialized" {
         not eslite_exists("admin_roles", hex("01" * 16))
     }

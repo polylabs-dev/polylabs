@@ -33,7 +33,7 @@ data Invoice : billing v1 {
     merkle_hash: bytes(32),
 }
     store graph
-    govern lex esn/global/org/polylabs/billing/history/invoice
+    govern lex global/org/polylabs/billing/history/invoice
     cortex {
         redact [blinded_token]
         infer on_write
@@ -48,7 +48,7 @@ data InvoiceLineItem : billing v1 {
     amount_minor: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/billing/history/lineitem
+    govern lex global/org/polylabs/billing/history/lineitem
     cortex {
         redact []
         infer on_write
@@ -66,7 +66,7 @@ data Payment : billing v1 {
     merkle_hash: bytes(32),
 }
     store graph
-    govern lex esn/global/org/polylabs/billing/history/payment
+    govern lex global/org/polylabs/billing/history/payment
     cortex {
         redact [blinded_token, settlement_id]
         infer on_write
@@ -83,7 +83,7 @@ data Credit : billing v1 {
     merkle_hash: bytes(32),
 }
     store graph
-    govern lex esn/global/org/polylabs/billing/history/credit
+    govern lex global/org/polylabs/billing/history/credit
     cortex {
         redact [blinded_token]
         infer on_write
@@ -132,7 +132,7 @@ dag billing_history {
 stream billing_history_events : event<Invoice>
     | throttle 5000/s burst 10000
     retention 7y
-    consumers [compliance, audit, streamsight]
+    consumers [compliance, audit, observe]
 
 // ── Circuits ────────────────────────────────────────────────────
 
@@ -143,9 +143,9 @@ circuit issue_invoice(
     line_items: list<InvoiceLineItem>,
     signing_sk: bytes(4896)
 ) -> Invoice
-    lex esn/global/org/polylabs/billing/history
-    precision D
-    observe metrics: [invoices_issued, invoice_total_amount, line_item_count]
+    lex global/org/polylabs/billing/history
+    @precision D
+    @observe metrics: [invoices_issued, invoice_total_amount, line_item_count]
     monitor "invoice_volume" { invoices_issued < 100000 per 86400s }
     invariant "period_valid" { period_end > period_start }
     invariant "has_line_items" { len(line_items) > 0 }
@@ -198,9 +198,9 @@ circuit record_payment(
     settlement_id: bytes(32),
     signing_sk: bytes(4896)
 ) -> Payment
-    lex esn/global/org/polylabs/billing/history
-    precision D
-    observe metrics: [payments_recorded, payment_total_amount, payment_by_token_type]
+    lex global/org/polylabs/billing/history
+    @precision D
+    @observe metrics: [payments_recorded, payment_total_amount, payment_by_token_type]
     monitor "payment_volume" { payments_recorded < 100000 per 86400s }
     invariant "invoice_exists" { eslite_exists("invoices", invoice_id) }
     invariant "amount_positive" { amount_minor > 0 }
@@ -250,9 +250,9 @@ circuit apply_credit(
     invoice_id: bytes(32),
     signing_sk: bytes(4896)
 ) -> Credit
-    lex esn/global/org/polylabs/billing/history
-    precision C
-    observe metrics: [credits_applied, credit_total_amount]
+    lex global/org/polylabs/billing/history
+    @precision C
+    @observe metrics: [credits_applied, credit_total_amount]
     monitor "credit_rate" { credits_applied < 1000 per 86400s }
     invariant "amount_positive" { amount_minor > 0 }
     invariant "reason_nonempty" { len(reason) > 0 }
@@ -290,9 +290,9 @@ circuit apply_credit(
 }
 
 circuit query_invoice_payments(invoice_id: bytes(32)) -> list<Payment>
-    lex esn/global/org/polylabs/billing/history
-    precision B
-    observe metrics: [payment_queries]
+    lex global/org/polylabs/billing/history
+    @precision B
+    @observe metrics: [payment_queries]
     invariant "invoice_exists" { eslite_exists("invoices", invoice_id) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [graph_predecessors]

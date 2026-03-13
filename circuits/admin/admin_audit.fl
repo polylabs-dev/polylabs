@@ -5,7 +5,7 @@
 //   Every administrative action is recorded as a signed, attested audit
 //   entry. Entries are append-only, ML-DSA-87 signed, and PoVC-attested
 //   for tamper evidence. The audit stream is consumed by compliance,
-//   governance, and streamsight subsystems.
+//   governance, and observe subsystems.
 //
 // Integrity:
 //   Each entry contains a prev_hash forming a hash chain. The chain is
@@ -27,7 +27,7 @@ data AuditEntry : admin v1 {
     timestamp: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/admin/audit
+    govern lex global/org/polylabs/admin/audit
     cortex {
         redact [actor_id]
         infer on_write
@@ -41,7 +41,7 @@ data AuditChainHead : admin v1 {
     last_verified_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/admin/audit/chain
+    govern lex global/org/polylabs/admin/audit/chain
     cortex {
         redact []
         infer on_write
@@ -53,7 +53,7 @@ data AuditChainHead : admin v1 {
 stream audit_events : event<AuditEntry>
     | throttle 5000/s burst 10000
     retention 7y
-    consumers [compliance, governance, streamsight]
+    consumers [compliance, governance, observe]
 
 // ── Circuits ────────────────────────────────────────────────────
 
@@ -65,16 +65,16 @@ circuit record_audit(
     details: string,
     signing_sk: bytes(4896)
 ) -> AuditEntry
-    lex esn/global/org/polylabs/admin/audit
-    precision D
-    observe metrics: [audit_entries_recorded, audit_chain_length, audit_actions_by_type]
+    lex global/org/polylabs/admin/audit
+    @precision D
+    @observe metrics: [audit_entries_recorded, audit_chain_length, audit_actions_by_type]
     monitor "audit_volume" { audit_entries_recorded < 100000 per 3600s }
     invariant "actor_nonzero" { actor_id != zero_bytes(32) }
     invariant "action_nonempty" { len(action) > 0 }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_query, eslite_insert, keccak256, mldsa_sign, now, random_bytes]
     sign ml_dsa_87
-    povc true
+    @attested true
 {
     let ts = now()
     let entry_id = random_bytes(32)
@@ -115,9 +115,9 @@ circuit record_audit(
 }
 
 circuit verify_audit_chain(depth: u64) -> bool
-    lex esn/global/org/polylabs/admin/audit
-    precision C
-    observe metrics: [chain_verifications, chain_integrity_failures]
+    lex global/org/polylabs/admin/audit
+    @precision C
+    @observe metrics: [chain_verifications, chain_integrity_failures]
     invariant "depth_positive" { depth > 0 }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_query, eslite_scan, keccak256, mldsa_verify]
@@ -147,9 +147,9 @@ circuit query_audit_by_actor(
     since: u64,
     limit: u32
 ) -> list<AuditEntry>
-    lex esn/global/org/polylabs/admin/audit
-    precision B
-    observe metrics: [audit_queries, audit_results_returned]
+    lex global/org/polylabs/admin/audit
+    @precision B
+    @observe metrics: [audit_queries, audit_results_returned]
     invariant "actor_nonzero" { actor_id != zero_bytes(32) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_scan]
@@ -218,7 +218,7 @@ test golden "verify_chain_single_entry" {
 
 // ── KAT ─────────────────────────────────────────────────────────
 
-kat_vector "mldsa87_audit_sign_verify" {
+golden_test "mldsa87_audit_sign_verify" {
     function: "mldsa_sign"
     input: {
         sk: hex("cc" * 4896)

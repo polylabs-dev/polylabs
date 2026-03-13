@@ -50,7 +50,7 @@ data Settlement : billing v1 {
     updated_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/billing/settlement
+    govern lex global/org/polylabs/billing/settlement
     cortex {
         redact [blinded_token, destination_address, l2_tx_hash]
         infer on_write
@@ -67,7 +67,7 @@ data SettlementResult : billing v1 {
     signature: bytes(4627),
 }
     store kv
-    govern lex esn/global/org/polylabs/billing/settlement/result
+    govern lex global/org/polylabs/billing/settlement/result
     cortex {
         redact [l2_confirmation, signature]
         infer on_write
@@ -88,9 +88,9 @@ circuit initiate_settlement(
     currency_decimals: u8,
     destination_address: bytes(32)
 ) -> Settlement
-    lex esn/global/org/polylabs/billing/settlement
-    precision D
-    observe metrics: [settlements_initiated, settlement_amount_total, token_type_distribution]
+    lex global/org/polylabs/billing/settlement
+    @precision D
+    @observe metrics: [settlements_initiated, settlement_amount_total, token_type_distribution]
     monitor "settlement_volume" { settlements_initiated < 10000 per 3600s }
     invariant "valid_token_type" {
         token_type == "USDC" or token_type == "SOL" or token_type == "cbBTC"
@@ -126,10 +126,10 @@ circuit finalize_settlement(
     error_reason: string,
     signing_sk: bytes(4896)
 ) -> SettlementResult
-    lex esn/global/org/polylabs/billing/settlement
-    precision D
+    lex global/org/polylabs/billing/settlement
+    @precision D
     constant_time true
-    observe metrics: [settlements_finalized, settlements_succeeded, settlements_failed, gas_consumed]
+    @observe metrics: [settlements_finalized, settlements_succeeded, settlements_failed, gas_consumed]
     monitor "settlement_failure_rate" { settlements_failed < 50 per 3600s }
     invariant "settlement_exists" { eslite_exists("settlements", settlement_id) }
     invariant "settlement_pending_or_processing" {

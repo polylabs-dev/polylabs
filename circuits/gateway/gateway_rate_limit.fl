@@ -27,7 +27,7 @@ data GlobalRateConfig : gateway v1 {
     updated_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/gateway/rate_limit/config
+    govern lex global/org/polylabs/gateway/rate_limit/config
     cortex {
         redact []
         infer on_write
@@ -44,7 +44,7 @@ data RateLimitResult : gateway v1 {
     checked_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/gateway/rate_limit/result
+    govern lex global/org/polylabs/gateway/rate_limit/result
     cortex {
         redact []
         infer on_write
@@ -59,7 +59,7 @@ data ProductRateQuota : gateway v1 {
     window_start: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/gateway/rate_limit/quota
+    govern lex global/org/polylabs/gateway/rate_limit/quota
     cortex {
         redact []
         infer on_write
@@ -78,9 +78,9 @@ circuit check_global_rate(
     request_id: bytes(16),
     product_id: bytes(16)
 ) -> RateLimitResult
-    lex esn/global/org/polylabs/gateway/rate_limit
-    precision B
-    observe metrics: [rate_checks, rate_allowed, rate_blocked, global_utilization_pct, product_utilization_pct]
+    lex global/org/polylabs/gateway/rate_limit
+    @precision B
+    @observe metrics: [rate_checks, rate_allowed, rate_blocked, global_utilization_pct, product_utilization_pct]
     monitor "global_rate_saturation" { global_utilization_pct < 90 }
     monitor "block_spike" { rate_blocked < 1000 per 60s }
     invariant "config_exists" { eslite_exists("rate_configs", hex("00" * 16)) }
