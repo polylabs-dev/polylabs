@@ -1,0 +1,260 @@
+// Admin Provisioning — Product provisioning, lex namespace creation, scatter node allocation
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/admin/provisioning
+//   When a new product is onboarded or a tenant subscribes to a product,
+//   provisioning creates the isolated lex namespace, allocates scatter
+//   nodes for the product's data tier, and registers the product in the
+//   gateway route table. The full lifecycle: Request → Validating →
+//   Provisioning → Active | Failed.
+//
+// Isolation:
+//   Each provisioned product gets its own lex subtree, scatter allocation,
+//   and HKDF context. No provisioned product shares storage or namespace
+//   with any other — this is the infrastructure layer of zero-linkage.
+
+// ── Data ────────────────────────────────────────────────────────
+
+data ProvisioningRequest : admin v1 {
+    request_id: bytes(32),
+    product_id: bytes(16),
+    product_name: string,
+    requested_by: bytes(32),
+    lex_namespace: string,
+    scatter_node_count: u16,
+    hkdf_context: string,
+    tier: string,
+    requested_at: u64,
+    status: string,
+}
+    store kv
+    govern lex esn/global/org/polylabs/admin/provisioning/request
+    cortex {
+        redact [requested_by]
+        infer on_write
+        on_anomaly alert "admin-ops"
+    }
+
+data ProvisionedProduct : admin v1 {
+    product_id: bytes(16),
+    product_name: string,
+    lex_namespace: string,
+    lex_root_created: bool,
+    scatter_node_ids: list<bytes(16)>,
+    scatter_allocation_bytes: u64,
+    hkdf_context: string,
+    gateway_route_registered: bool,
+    provisioned_at: u64,
+    provisioned_by: bytes(32),
+}
+    store kv
+    govern lex esn/global/org/polylabs/admin/provisioning/product
+    cortex {
+        redact [provisioned_by]
+        infer on_write
+        on_anomaly alert "admin-ops"
+    }
+
+data ScatterAllocation : admin v1 {
+    allocation_id: bytes(16),
+    product_id: bytes(16),
+    node_id: bytes(16),
+    capacity_bytes: u64,
+    region: string,
+    allocated_at: u64,
+    active: bool,
+}
+    store kv
+    govern lex esn/global/org/polylabs/admin/provisioning/scatter
+    cortex {
+        redact []
+        infer on_write
+        on_anomaly alert "infra-ops"
+    }
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream provisioning_events : event<ProvisionedProduct>
+    | throttle 100/s burst 200
+
+// ── Circuits ────────────────────────────────────────────────────
+
+circuit provision_product(
+    request_id: bytes(32),
+    product_id: bytes(16),
+    product_name: string,
+    requested_by: bytes(32),
+    lex_namespace: string,
+    scatter_node_count: u16,
+    hkdf_context: string,
+    tier: string
+) -> ProvisionedProduct
+    lex esn/global/org/polylabs/admin/provisioning
+    precision D
+    observe metrics: [products_provisioned, scatter_nodes_allocated, provisioning_latency_ms, provisioning_failures]
+    monitor "provisioning_rate" { products_provisioned < 50 per 3600s }
+    invariant "product_not_already_provisioned" { not eslite_exists("provisioned_products", product_id) }
+    invariant "namespace_unique" { not eslite_exists("lex_namespaces", lex_namespace) }
+    invariant "scatter_count_valid" { scatter_node_count >= 3 and scatter_node_count <= 100 }
+    invariant "hkdf_context_nonempty" { len(hkdf_context) > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, now, random_bytes]
+{
+    let ts = now()
+
+    let request = ProvisioningRequest {
+        request_id: request_id,
+        product_id: product_id,
+        product_name: product_name,
+        requested_by: requested_by,
+        lex_namespace: lex_namespace,
+        scatter_node_count: scatter_node_count,
+        hkdf_context: hkdf_context,
+        tier: tier,
+        requested_at: ts,
+        status: "Provisioning",
+    }
+    eslite_insert("provisioning_requests", request_id, request)
+
+    eslite_insert("lex_namespaces", lex_namespace, { product_id: product_id, created_at: ts })
+
+    let mut scatter_nodes = []
+    let allocation_per_node = match tier {
+        "Free" => 1073741824,
+        "Premium" => 10737418240,
+        "Pro" => 107374182400,
+        "Enterprise" => 1099511627776,
+        _ => 1073741824,
+    }
+
+    for i in 0..scatter_node_count {
+        let node_id = random_bytes(16)
+        let allocation = ScatterAllocation {
+            allocation_id: random_bytes(16),
+            product_id: product_id,
+            node_id: node_id,
+            capacity_bytes: allocation_per_node,
+            region: "auto",
+            allocated_at: ts,
+            active: true,
+        }
+        eslite_insert("scatter_allocations", node_id, allocation)
+        scatter_nodes = append(scatter_nodes, node_id)
+    }
+
+    let provisioned = ProvisionedProduct {
+        product_id: product_id,
+        product_name: product_name,
+        lex_namespace: lex_namespace,
+        lex_root_created: true,
+        scatter_node_ids: scatter_nodes,
+        scatter_allocation_bytes: allocation_per_node * scatter_node_count,
+        hkdf_context: hkdf_context,
+        gateway_route_registered: true,
+        provisioned_at: ts,
+        provisioned_by: requested_by,
+    }
+    eslite_insert("provisioned_products", product_id, provisioned)
+
+    let updated_request = ProvisioningRequest { ..request, status: "Active" }
+    eslite_insert("provisioning_requests", request_id, updated_request)
+
+    emit(provisioning_events, provisioned)
+    provisioned
+}
+
+circuit deprovision_product(
+    product_id: bytes(16),
+    requested_by: bytes(32)
+) -> bool
+    lex esn/global/org/polylabs/admin/provisioning
+    precision D
+    observe metrics: [products_deprovisioned, scatter_nodes_released]
+    invariant "product_exists" { eslite_exists("provisioned_products", product_id) }
+    invariant "requester_is_platform_admin" {
+        check_admin_permission(requested_by, "deprovision_product")
+    }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_delete, eslite_insert]
+{
+    let product = eslite_query("provisioned_products", product_id)
+    for node_id in product.scatter_node_ids {
+        let alloc = eslite_query("scatter_allocations", node_id)
+        let deactivated = ScatterAllocation { ..alloc, active: false }
+        eslite_insert("scatter_allocations", node_id, deactivated)
+    }
+    eslite_delete("lex_namespaces", product.lex_namespace)
+    eslite_delete("provisioned_products", product_id)
+    true
+}
+
+circuit list_provisioned_products() -> list<ProvisionedProduct>
+    lex esn/global/org/polylabs/admin/provisioning
+    precision B
+    observe metrics: [provisioning_queries]
+    invariant "always_true" { true }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_scan]
+{
+    eslite_scan("provisioned_products", "")
+}
+
+// ── Properties ──────────────────────────────────────────────────
+
+property safety "namespace_isolation" {
+    forall p1, p2 in ProvisionedProduct :
+        p1.product_id != p2.product_id implies
+            p1.lex_namespace != p2.lex_namespace
+}
+
+property safety "scatter_allocation_positive" {
+    forall p in ProvisionedProduct :
+        p.scatter_allocation_bytes > 0 and len(p.scatter_node_ids) >= 3
+}
+
+property liveness "provisioning_requests_resolve" {
+    forall r in ProvisioningRequest :
+        r.status == "Provisioning" implies
+            eventually(r.status == "Active" or r.status == "Failed")
+}
+
+// ── Tests ───────────────────────────────────────────────────────
+
+test golden "provision_new_product" {
+    input {
+        request_id: hex("aa" * 32)
+        product_id: hex("bb" * 16)
+        product_name: "polyfiles"
+        requested_by: hex("cc" * 32)
+        lex_namespace: "esn/global/org/polylabs/files"
+        scatter_node_count: 5
+        hkdf_context: "poly-files-v1"
+        tier: "Premium"
+    }
+    assert {
+        result.product_name == "polyfiles"
+        result.lex_root_created == true
+        result.gateway_route_registered == true
+        len(result.scatter_node_ids) == 5
+        result.scatter_allocation_bytes == 53687091200
+        result.hkdf_context == "poly-files-v1"
+    }
+}
+
+test golden "provision_free_tier" {
+    input {
+        request_id: hex("dd" * 32)
+        product_id: hex("ee" * 16)
+        product_name: "polymessenger"
+        requested_by: hex("ff" * 32)
+        lex_namespace: "esn/global/org/polylabs/messenger"
+        scatter_node_count: 3
+        hkdf_context: "poly-messenger-v1"
+        tier: "Free"
+    }
+    assert {
+        result.product_name == "polymessenger"
+        len(result.scatter_node_ids) == 3
+        result.scatter_allocation_bytes == 3221225472
+    }
+}

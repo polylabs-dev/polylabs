@@ -1,0 +1,235 @@
+// Gateway Rate Limit — Global rate limiting composing PolyKit rate_limiter
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/gateway/rate_limit
+//   Global rate limits are enforced before per-product routing. Each product
+//   also has its own rate budget that cannot exceed the global ceiling.
+//   Composed from PolyKit's rate_limiter primitive with platform-specific
+//   thresholds and burst configuration.
+//
+// Architecture:
+//   Two-tier: global ceiling (all products combined) and per-product quotas.
+//   The global check runs first. If it passes, the per-product quota is
+//   decremented. Both use sliding-window counters stored in Stratum KV.
+
+import polykit_rate_limiter
+
+// ── Data ────────────────────────────────────────────────────────
+
+data GlobalRateConfig : gateway v1 {
+    config_id: bytes(16),
+    global_rps_limit: u64,
+    global_burst_limit: u64,
+    per_product_rps_default: u64,
+    per_product_burst_default: u64,
+    window_seconds: u32,
+    enabled: bool,
+    updated_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/gateway/rate_limit/config
+    cortex {
+        redact []
+        infer on_write
+        on_anomaly alert "gateway-ops"
+    }
+
+data RateLimitResult : gateway v1 {
+    request_id: bytes(16),
+    product_id: bytes(16),
+    allowed: bool,
+    global_remaining: u64,
+    product_remaining: u64,
+    retry_after_ms: u64,
+    checked_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/gateway/rate_limit/result
+    cortex {
+        redact []
+        infer on_write
+        on_anomaly alert "gateway-ops"
+    }
+
+data ProductRateQuota : gateway v1 {
+    product_id: bytes(16),
+    rps_limit: u64,
+    burst_limit: u64,
+    current_count: u64,
+    window_start: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/gateway/rate_limit/quota
+    cortex {
+        redact []
+        infer on_write
+        on_anomaly alert "gateway-ops"
+    }
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream rate_limit_events : event<RateLimitResult>
+    | throttle 50000/s burst 100000
+
+// ── Circuit ─────────────────────────────────────────────────────
+
+@guard(block_on: global_rate_exceeded)
+circuit check_global_rate(
+    request_id: bytes(16),
+    product_id: bytes(16)
+) -> RateLimitResult
+    lex esn/global/org/polylabs/gateway/rate_limit
+    precision B
+    observe metrics: [rate_checks, rate_allowed, rate_blocked, global_utilization_pct, product_utilization_pct]
+    monitor "global_rate_saturation" { global_utilization_pct < 90 }
+    monitor "block_spike" { rate_blocked < 1000 per 60s }
+    invariant "config_exists" { eslite_exists("rate_configs", hex("00" * 16)) }
+    meters [compute_cycles]
+    wasm_abi [eslite_query, eslite_insert, now]
+{
+    let ts = now()
+    let config = eslite_query("rate_configs", hex("00" * 16))
+
+    if not config.enabled {
+        return RateLimitResult {
+            request_id: request_id,
+            product_id: product_id,
+            allowed: true,
+            global_remaining: config.global_rps_limit,
+            product_remaining: config.per_product_rps_default,
+            retry_after_ms: 0,
+            checked_at: ts,
+        }
+    }
+
+    let global_counter = eslite_query("global_counter", hex("00" * 16))
+    let window_elapsed = ts - global_counter.window_start
+
+    let effective_count = if window_elapsed >= config.window_seconds {
+        eslite_insert("global_counter", hex("00" * 16), { count: 1, window_start: ts })
+        1
+    } else {
+        let new_count = global_counter.count + 1
+        eslite_insert("global_counter", hex("00" * 16), { count: new_count, window_start: global_counter.window_start })
+        new_count
+    }
+
+    if effective_count > config.global_rps_limit + config.global_burst_limit {
+        let blocked = RateLimitResult {
+            request_id: request_id,
+            product_id: product_id,
+            allowed: false,
+            global_remaining: 0,
+            product_remaining: 0,
+            retry_after_ms: (config.window_seconds - window_elapsed) * 1000,
+            checked_at: ts,
+        }
+        emit(rate_limit_events, blocked)
+        return blocked
+    }
+
+    let quota = eslite_query("product_quotas", product_id)
+    let product_window_elapsed = ts - quota.window_start
+    let product_count = if product_window_elapsed >= config.window_seconds {
+        eslite_insert("product_quotas", product_id, ProductRateQuota {
+            product_id: product_id,
+            rps_limit: quota.rps_limit,
+            burst_limit: quota.burst_limit,
+            current_count: 1,
+            window_start: ts,
+        })
+        1
+    } else {
+        let new_count = quota.current_count + 1
+        eslite_insert("product_quotas", product_id, ProductRateQuota {
+            ..quota,
+            current_count: new_count,
+        })
+        new_count
+    }
+
+    let product_allowed = product_count <= quota.rps_limit + quota.burst_limit
+    let result = RateLimitResult {
+        request_id: request_id,
+        product_id: product_id,
+        allowed: product_allowed,
+        global_remaining: config.global_rps_limit + config.global_burst_limit - effective_count,
+        product_remaining: if product_allowed { quota.rps_limit + quota.burst_limit - product_count } else { 0 },
+        retry_after_ms: if product_allowed { 0 } else { (config.window_seconds - product_window_elapsed) * 1000 },
+        checked_at: ts,
+    }
+    emit(rate_limit_events, result)
+    result
+}
+
+// ── Properties ──────────────────────────────────────────────────
+
+property safety "global_ceiling_respected" {
+    forall snapshot in GlobalCounter :
+        snapshot.count <= eslite_query("rate_configs", hex("00" * 16)).global_rps_limit
+            + eslite_query("rate_configs", hex("00" * 16)).global_burst_limit
+}
+
+property liveness "rate_windows_reset" {
+    forall q in ProductRateQuota :
+        eventually(now() - q.window_start >= eslite_query("rate_configs", hex("00" * 16)).window_seconds)
+}
+
+// ── Tests ───────────────────────────────────────────────────────
+
+test golden "allow_under_limit" {
+    setup {
+        eslite_insert("rate_configs", hex("00" * 16), GlobalRateConfig {
+            config_id: hex("00" * 16),
+            global_rps_limit: 10000,
+            global_burst_limit: 2000,
+            per_product_rps_default: 1000,
+            per_product_burst_default: 200,
+            window_seconds: 60,
+            enabled: true,
+            updated_at: 1000,
+        })
+        eslite_insert("global_counter", hex("00" * 16), { count: 0, window_start: 900 })
+        eslite_insert("product_quotas", hex("aa" * 16), ProductRateQuota {
+            product_id: hex("aa" * 16),
+            rps_limit: 1000,
+            burst_limit: 200,
+            current_count: 0,
+            window_start: 900,
+        })
+    }
+    input {
+        request_id: hex("bb" * 16)
+        product_id: hex("aa" * 16)
+    }
+    assert {
+        result.allowed == true
+        result.retry_after_ms == 0
+        result.global_remaining > 0
+    }
+}
+
+test golden "block_over_global_limit" {
+    setup {
+        eslite_insert("rate_configs", hex("00" * 16), GlobalRateConfig {
+            config_id: hex("00" * 16),
+            global_rps_limit: 10,
+            global_burst_limit: 2,
+            per_product_rps_default: 1000,
+            per_product_burst_default: 200,
+            window_seconds: 60,
+            enabled: true,
+            updated_at: 1000,
+        })
+        eslite_insert("global_counter", hex("00" * 16), { count: 12, window_start: 950 })
+    }
+    input {
+        request_id: hex("cc" * 16)
+        product_id: hex("aa" * 16)
+    }
+    assert {
+        result.allowed == false
+        result.global_remaining == 0
+        result.retry_after_ms > 0
+    }
+}

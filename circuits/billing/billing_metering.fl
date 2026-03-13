@@ -1,0 +1,255 @@
+// Billing Metering — 8D metering aggregation per product, per user
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/billing/metering
+//   Metering operates in 8 dimensions: compute_cycles, memory_bytes,
+//   storage_bytes, bandwidth_bytes, api_calls, circuit_executions,
+//   scatter_operations, and lex_queries. Each product meters independently
+//   under its own blinded user_id — no cross-product metering graph exists.
+//
+// Composition:
+//   Composes PolyKit metering primitives with platform-specific aggregation
+//   windows and overage detection.
+
+import polykit_metering
+
+// ── Data ────────────────────────────────────────────────────────
+
+data ProductMeteringState : billing v1 {
+    metering_id: bytes(32),
+    blinded_user_id: bytes(32),
+    product_id: bytes(16),
+    period_start: u64,
+    period_end: u64,
+    compute_cycles: u64,
+    memory_bytes: u64,
+    storage_bytes: u64,
+    bandwidth_bytes: u64,
+    api_calls: u64,
+    circuit_executions: u64,
+    scatter_operations: u64,
+    lex_queries: u64,
+    overage: bool,
+    last_aggregated_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/billing/metering
+    cortex {
+        redact [blinded_user_id]
+        infer on_write
+        on_anomaly alert "billing-ops"
+    }
+
+data MeteringIncrement : billing v1 {
+    product_id: bytes(16),
+    blinded_user_id: bytes(32),
+    dimension: string,
+    delta: u64,
+    timestamp: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/billing/metering/increment
+    cortex {
+        redact [blinded_user_id]
+        infer on_write
+        on_anomaly alert "billing-ops"
+    }
+
+data MeteringQuota : billing v1 {
+    product_id: bytes(16),
+    tier: string,
+    compute_cycles_limit: u64,
+    memory_bytes_limit: u64,
+    storage_bytes_limit: u64,
+    bandwidth_bytes_limit: u64,
+    api_calls_limit: u64,
+    circuit_executions_limit: u64,
+    scatter_operations_limit: u64,
+    lex_queries_limit: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/billing/metering/quota
+    cortex {
+        redact []
+        infer on_write
+        on_anomaly alert "billing-ops"
+    }
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream metering_events : event<MeteringIncrement>
+    | throttle 100000/s burst 200000
+
+// ── Circuits ────────────────────────────────────────────────────
+
+circuit aggregate_product_metering(
+    product_id: bytes(16),
+    blinded_user_id: bytes(32),
+    increments: list<MeteringIncrement>
+) -> ProductMeteringState
+    lex esn/global/org/polylabs/billing/metering
+    precision B
+    observe metrics: [metering_aggregations, overage_events, dimensions_tracked, total_increments]
+    monitor "overage_rate" { overage_events < 100 per 3600s }
+    invariant "increments_nonempty" { len(increments) > 0 }
+    invariant "all_same_product" {
+        forall i in increments : i.product_id == product_id
+    }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, now]
+{
+    let ts = now()
+    let key = concat(product_id, blinded_user_id)
+    let existing = eslite_query("metering_states", key)
+
+    let mut state = if existing == null {
+        ProductMeteringState {
+            metering_id: random_bytes(32),
+            blinded_user_id: blinded_user_id,
+            product_id: product_id,
+            period_start: ts,
+            period_end: ts + 2592000,
+            compute_cycles: 0,
+            memory_bytes: 0,
+            storage_bytes: 0,
+            bandwidth_bytes: 0,
+            api_calls: 0,
+            circuit_executions: 0,
+            scatter_operations: 0,
+            lex_queries: 0,
+            overage: false,
+            last_aggregated_at: ts,
+        }
+    } else {
+        existing
+    }
+
+    for inc in increments {
+        match inc.dimension {
+            "compute_cycles" => { state.compute_cycles = state.compute_cycles + inc.delta },
+            "memory_bytes" => { state.memory_bytes = state.memory_bytes + inc.delta },
+            "storage_bytes" => { state.storage_bytes = state.storage_bytes + inc.delta },
+            "bandwidth_bytes" => { state.bandwidth_bytes = state.bandwidth_bytes + inc.delta },
+            "api_calls" => { state.api_calls = state.api_calls + inc.delta },
+            "circuit_executions" => { state.circuit_executions = state.circuit_executions + inc.delta },
+            "scatter_operations" => { state.scatter_operations = state.scatter_operations + inc.delta },
+            "lex_queries" => { state.lex_queries = state.lex_queries + inc.delta },
+            _ => { },
+        }
+        emit(metering_events, inc)
+    }
+
+    let quota = eslite_query("metering_quotas", concat(product_id, state.current_tier_key))
+    if quota != null {
+        state.overage = state.compute_cycles > quota.compute_cycles_limit
+            or state.memory_bytes > quota.memory_bytes_limit
+            or state.storage_bytes > quota.storage_bytes_limit
+            or state.bandwidth_bytes > quota.bandwidth_bytes_limit
+            or state.api_calls > quota.api_calls_limit
+            or state.circuit_executions > quota.circuit_executions_limit
+            or state.scatter_operations > quota.scatter_operations_limit
+            or state.lex_queries > quota.lex_queries_limit
+    }
+
+    state.last_aggregated_at = ts
+    eslite_insert("metering_states", key, state)
+    state
+}
+
+circuit reset_metering_period(
+    product_id: bytes(16),
+    blinded_user_id: bytes(32)
+) -> ProductMeteringState
+    lex esn/global/org/polylabs/billing/metering
+    precision C
+    observe metrics: [metering_resets]
+    invariant "state_exists" { eslite_exists("metering_states", concat(product_id, blinded_user_id)) }
+    meters [compute_cycles]
+    wasm_abi [eslite_query, eslite_insert, now]
+{
+    let ts = now()
+    let key = concat(product_id, blinded_user_id)
+    let old = eslite_query("metering_states", key)
+    let reset = ProductMeteringState {
+        ..old,
+        period_start: ts,
+        period_end: ts + 2592000,
+        compute_cycles: 0,
+        memory_bytes: 0,
+        storage_bytes: 0,
+        bandwidth_bytes: 0,
+        api_calls: 0,
+        circuit_executions: 0,
+        scatter_operations: 0,
+        lex_queries: 0,
+        overage: false,
+        last_aggregated_at: ts,
+    }
+    eslite_insert("metering_states", key, reset)
+    reset
+}
+
+// ── Properties ──────────────────────────────────────────────────
+
+property safety "no_cross_product_aggregation" {
+    forall s in ProductMeteringState :
+        forall i in MeteringIncrement :
+            i.product_id == s.product_id or not aggregated_into(i, s)
+}
+
+property liveness "metering_periods_reset" {
+    forall s in ProductMeteringState :
+        eventually(now() >= s.period_end implies s.period_start > s.period_end - 2592000)
+}
+
+// ── Tests ───────────────────────────────────────────────────────
+
+test golden "aggregate_single_dimension" {
+    input {
+        product_id: hex("aa" * 16)
+        blinded_user_id: hex("bb" * 32)
+        increments: [
+            MeteringIncrement {
+                product_id: hex("aa" * 16),
+                blinded_user_id: hex("bb" * 32),
+                dimension: "api_calls",
+                delta: 100,
+                timestamp: 1000,
+            }
+        ]
+    }
+    assert {
+        result.api_calls == 100
+        result.compute_cycles == 0
+        result.overage == false
+        result.product_id == hex("aa" * 16)
+    }
+}
+
+test golden "aggregate_multiple_dimensions" {
+    input {
+        product_id: hex("aa" * 16)
+        blinded_user_id: hex("bb" * 32)
+        increments: [
+            MeteringIncrement {
+                product_id: hex("aa" * 16),
+                blinded_user_id: hex("bb" * 32),
+                dimension: "compute_cycles",
+                delta: 5000,
+                timestamp: 1000,
+            },
+            MeteringIncrement {
+                product_id: hex("aa" * 16),
+                blinded_user_id: hex("bb" * 32),
+                dimension: "storage_bytes",
+                delta: 1048576,
+                timestamp: 1001,
+            },
+        ]
+    }
+    assert {
+        result.compute_cycles == 5000
+        result.storage_bytes == 1048576
+        result.api_calls == 0
+    }
+}

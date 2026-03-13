@@ -1,0 +1,242 @@
+// Tenant Graph — Customer, Subscription, Product relationship registry
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/tenant
+//   The tenant registry models the three core entities of the platform:
+//   Customers (blinded identities), Subscriptions (tier + billing state),
+//   and Products (provisioned services). Edges capture which customer holds
+//   which subscriptions and which products those subscriptions entitle.
+//
+// Privacy:
+//   Customer nodes store only the blinded_token — never SPARK identity.
+//   The graph cannot be used to de-anonymize users across products.
+//   AI feeds operate on aggregate patterns only (churn prediction,
+//   tier distribution).
+//
+// Storage:
+//   CSR with BRAM hot tier for real-time permission/entitlement checks,
+//   DDR for the full graph. ML-DSA-87 signed for audit integrity.
+
+// ── Data ────────────────────────────────────────────────────────
+
+data Customer : tenant v1 {
+    customer_id: bytes(32),
+    blinded_token: bytes(64),
+    created_at: u64,
+    active: bool,
+    product_count: u16,
+}
+    store graph
+    govern lex esn/global/org/polylabs/tenant/customer
+    cortex {
+        redact [blinded_token]
+        infer on_write
+        on_anomaly alert "tenant-ops"
+    }
+
+data Subscription : tenant v1 {
+    subscription_id: bytes(32),
+    tier: string,
+    status: string,
+    billing_cycle_start: u64,
+    billing_cycle_end: u64,
+    auto_renew: bool,
+}
+    store graph
+    govern lex esn/global/org/polylabs/tenant/subscription
+    cortex {
+        redact []
+        infer on_write
+        on_anomaly alert "tenant-ops"
+    }
+
+data Product : tenant v1 {
+    product_id: bytes(16),
+    product_name: string,
+    lex_namespace: string,
+    provisioned: bool,
+    launched_at: u64,
+}
+    store graph
+    govern lex esn/global/org/polylabs/tenant/product
+    cortex {
+        redact []
+        infer on_write
+        on_anomaly alert "tenant-ops"
+    }
+
+// ── Graph ───────────────────────────────────────────────────────
+
+graph tenant_registry {
+    node CustomerNode : Customer
+    node SubscriptionNode : Subscription
+    node ProductNode : Product
+
+    edge holds_subscription : CustomerNode -> SubscriptionNode
+    edge entitles_product : SubscriptionNode -> ProductNode
+    edge uses_product : CustomerNode -> ProductNode
+
+    overlay tier_distribution on SubscriptionNode { tier: string }
+    overlay customer_activity on CustomerNode { product_count: u16, active: bool }
+    overlay product_adoption on ProductNode { subscriber_count: u32 }
+
+    storage csr {
+        tier bram { capacity: 4096 }
+        tier ddr { capacity: 1048576 }
+    }
+
+    series tenant_growth {
+        over nodes(CustomerNode)
+        fields: [total_customers, active_customers, churned_customers]
+    }
+
+    series subscription_distribution {
+        over nodes(SubscriptionNode)
+        fields: [free_count, premium_count, pro_count, enterprise_count]
+    }
+
+    series product_adoption_series {
+        over nodes(ProductNode)
+        fields: [subscriber_count, active_users_30d]
+    }
+
+    sign ml_dsa_87
+    ai_feed tenant_churn_prediction
+    ai_feed tier_upgrade_propensity
+}
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream tenant_events : event<Customer>
+    | throttle 1000/s burst 2000
+
+// ── Circuits ────────────────────────────────────────────────────
+
+circuit register_customer(
+    blinded_token: bytes(64)
+) -> Customer
+    lex esn/global/org/polylabs/tenant
+    precision C
+    observe metrics: [customers_registered, total_customers]
+    invariant "token_nonzero" { blinded_token != zero_bytes(64) }
+    invariant "not_duplicate" { not eslite_exists("customers_by_token", blinded_token) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now, random_bytes]
+{
+    let ts = now()
+    let customer_id = random_bytes(32)
+    let customer = Customer {
+        customer_id: customer_id,
+        blinded_token: blinded_token,
+        created_at: ts,
+        active: true,
+        product_count: 0,
+    }
+    eslite_insert("customers", customer_id, customer)
+    eslite_insert("customers_by_token", blinded_token, customer_id)
+    emit(tenant_events, customer)
+    customer
+}
+
+circuit link_subscription(
+    customer_id: bytes(32),
+    subscription_id: bytes(32),
+    product_id: bytes(16)
+) -> bool
+    lex esn/global/org/polylabs/tenant
+    precision C
+    observe metrics: [subscriptions_linked, product_links_created]
+    invariant "customer_exists" { eslite_exists("customers", customer_id) }
+    invariant "subscription_exists" { eslite_exists("subscriptions", subscription_id) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, graph_add_edge]
+{
+    graph_add_edge("tenant_registry", "holds_subscription", customer_id, subscription_id)
+    graph_add_edge("tenant_registry", "entitles_product", subscription_id, product_id)
+    graph_add_edge("tenant_registry", "uses_product", customer_id, product_id)
+
+    let customer = eslite_query("customers", customer_id)
+    let updated = Customer { ..customer, product_count: customer.product_count + 1 }
+    eslite_insert("customers", customer_id, updated)
+    true
+}
+
+circuit query_customer_products(customer_id: bytes(32)) -> list<Product>
+    lex esn/global/org/polylabs/tenant
+    precision B
+    observe metrics: [customer_product_queries]
+    invariant "customer_exists" { eslite_exists("customers", customer_id) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [graph_neighbors]
+{
+    let product_ids = graph_neighbors("tenant_registry", "uses_product", customer_id)
+    let mut products = []
+    for pid in product_ids {
+        let product = eslite_query("products", pid)
+        if product != null {
+            products = append(products, product)
+        }
+    }
+    products
+}
+
+// ── Properties ──────────────────────────────────────────────────
+
+property safety "customer_product_count_consistent" {
+    forall c in Customer :
+        c.product_count == len(graph_neighbors("tenant_registry", "uses_product", c.customer_id))
+}
+
+property safety "subscription_links_valid" {
+    forall edge in holds_subscription :
+        eslite_exists("customers", edge.source) and eslite_exists("subscriptions", edge.target)
+}
+
+property liveness "new_customers_get_subscriptions" {
+    forall c in Customer :
+        c.active == true implies
+            eventually(len(graph_neighbors("tenant_registry", "holds_subscription", c.customer_id)) > 0)
+}
+
+// ── Tests ───────────────────────────────────────────────────────
+
+test golden "register_new_customer" {
+    input {
+        blinded_token: hex("aa" * 64)
+    }
+    assert {
+        result.active == true
+        result.product_count == 0
+        len(result.customer_id) == 32
+        result.created_at > 0
+    }
+}
+
+test golden "link_subscription_to_customer" {
+    setup {
+        let customer = register_customer(hex("bb" * 64))
+        eslite_insert("subscriptions", hex("cc" * 32), Subscription {
+            subscription_id: hex("cc" * 32),
+            tier: "Premium",
+            status: "Active",
+            billing_cycle_start: 1000,
+            billing_cycle_end: 3592000,
+            auto_renew: true,
+        })
+        eslite_insert("products", hex("dd" * 16), Product {
+            product_id: hex("dd" * 16),
+            product_name: "polyfiles",
+            lex_namespace: "esn/global/org/polylabs/files",
+            provisioned: true,
+            launched_at: 500,
+        })
+    }
+    input {
+        customer_id: customer.customer_id
+        subscription_id: hex("cc" * 32)
+        product_id: hex("dd" * 16)
+    }
+    assert {
+        result == true
+    }
+}

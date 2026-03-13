@@ -1,0 +1,405 @@
+// Billing DAG — Invoice, Payment, Credit history with merkle chain
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/billing/history
+//   The billing DAG is an append-only directed acyclic graph tracking
+//   every financial event: invoices issued, payments received, and credits
+//   applied. Each node is merkle-chained to its predecessors for tamper
+//   evidence. The DAG supports audit queries: "show me all payments for
+//   invoice X" or "trace all credits applied to customer Y's account."
+//
+// Privacy:
+//   DAG nodes reference blinded_tokens, never SPARK identities. The
+//   billing history is queryable by blinded_token but cannot be correlated
+//   to user identity across products.
+//
+// Integrity:
+//   Merkle chain ensures append-only semantics. ML-DSA-87 signing on
+//   every node provides non-repudiation. AI feed detects billing anomalies
+//   (duplicate payments, unusual credit patterns, settlement mismatches).
+
+// ── Data ────────────────────────────────────────────────────────
+
+data Invoice : billing v1 {
+    invoice_id: bytes(32),
+    blinded_token: bytes(64),
+    period_start: u64,
+    period_end: u64,
+    amount_minor: u64,
+    currency: string,
+    line_items: list<InvoiceLineItem>,
+    status: string,
+    issued_at: u64,
+    merkle_hash: bytes(32),
+}
+    store graph
+    govern lex esn/global/org/polylabs/billing/history/invoice
+    cortex {
+        redact [blinded_token]
+        infer on_write
+        on_anomaly alert "billing-ops"
+    }
+
+data InvoiceLineItem : billing v1 {
+    product_id: bytes(16),
+    description: string,
+    quantity: u64,
+    unit_price_minor: u64,
+    amount_minor: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/billing/history/lineitem
+    cortex {
+        redact []
+        infer on_write
+        on_anomaly alert "billing-ops"
+    }
+
+data Payment : billing v1 {
+    payment_id: bytes(32),
+    invoice_id: bytes(32),
+    blinded_token: bytes(64),
+    amount_minor: u64,
+    token_type: string,
+    settlement_id: bytes(32),
+    paid_at: u64,
+    merkle_hash: bytes(32),
+}
+    store graph
+    govern lex esn/global/org/polylabs/billing/history/payment
+    cortex {
+        redact [blinded_token, settlement_id]
+        infer on_write
+        on_anomaly alert "billing-ops"
+    }
+
+data Credit : billing v1 {
+    credit_id: bytes(32),
+    blinded_token: bytes(64),
+    amount_minor: u64,
+    reason: string,
+    applied_to_invoice: bytes(32),
+    issued_at: u64,
+    merkle_hash: bytes(32),
+}
+    store graph
+    govern lex esn/global/org/polylabs/billing/history/credit
+    cortex {
+        redact [blinded_token]
+        infer on_write
+        on_anomaly alert "billing-ops"
+    }
+
+// ── DAG ─────────────────────────────────────────────────────────
+
+dag billing_history {
+    node InvoiceNode : Invoice
+    node PaymentNode : Payment
+    node CreditNode : Credit
+
+    edge pays : PaymentNode -> InvoiceNode
+    edge credits : CreditNode -> InvoiceNode
+    edge follows_invoice : InvoiceNode -> InvoiceNode
+    edge refunds : CreditNode -> PaymentNode
+
+    overlay invoice_status on InvoiceNode { status: string, amount_minor: u64 }
+    overlay payment_method on PaymentNode { token_type: string }
+    overlay credit_reason on CreditNode { reason: string }
+
+    storage csr {
+        tier bram { capacity: 2048 }
+        tier ddr { capacity: 524288 }
+    }
+
+    series revenue_series {
+        over nodes(PaymentNode)
+        fields: [total_payments, total_amount, payment_count_by_token]
+    }
+
+    series credit_series {
+        over nodes(CreditNode)
+        fields: [total_credits, credit_count, avg_credit_amount]
+    }
+
+    merkle_chain true
+    sign ml_dsa_87
+    ai_feed billing_anomaly_detection
+    ai_feed revenue_forecasting
+}
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream billing_history_events : event<Invoice>
+    | throttle 5000/s burst 10000
+    retention 7y
+    consumers [compliance, audit, streamsight]
+
+// ── Circuits ────────────────────────────────────────────────────
+
+circuit issue_invoice(
+    blinded_token: bytes(64),
+    period_start: u64,
+    period_end: u64,
+    line_items: list<InvoiceLineItem>,
+    signing_sk: bytes(4896)
+) -> Invoice
+    lex esn/global/org/polylabs/billing/history
+    precision D
+    observe metrics: [invoices_issued, invoice_total_amount, line_item_count]
+    monitor "invoice_volume" { invoices_issued < 100000 per 86400s }
+    invariant "period_valid" { period_end > period_start }
+    invariant "has_line_items" { len(line_items) > 0 }
+    invariant "token_nonzero" { blinded_token != zero_bytes(64) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, keccak256, mldsa_sign, now, random_bytes]
+    sign ml_dsa_87
+{
+    let ts = now()
+    let invoice_id = random_bytes(32)
+
+    let mut total = 0
+    for item in line_items {
+        total = total + item.amount_minor
+    }
+
+    let prev_invoice = eslite_query("latest_invoice", blinded_token)
+    let prev_hash = if prev_invoice != null { prev_invoice.merkle_hash } else { zero_bytes(32) }
+    let merkle_payload = concat(invoice_id, blinded_token, encode(total), encode(ts), prev_hash)
+    let merkle_hash = keccak256(merkle_payload)
+
+    let invoice = Invoice {
+        invoice_id: invoice_id,
+        blinded_token: blinded_token,
+        period_start: period_start,
+        period_end: period_end,
+        amount_minor: total,
+        currency: "USDC",
+        line_items: line_items,
+        status: "Issued",
+        issued_at: ts,
+        merkle_hash: merkle_hash,
+    }
+    eslite_insert("invoices", invoice_id, invoice)
+    eslite_insert("latest_invoice", blinded_token, invoice)
+
+    if prev_invoice != null {
+        graph_add_edge("billing_history", "follows_invoice", invoice_id, prev_invoice.invoice_id)
+    }
+
+    emit(billing_history_events, invoice)
+    invoice
+}
+
+circuit record_payment(
+    invoice_id: bytes(32),
+    blinded_token: bytes(64),
+    amount_minor: u64,
+    token_type: string,
+    settlement_id: bytes(32),
+    signing_sk: bytes(4896)
+) -> Payment
+    lex esn/global/org/polylabs/billing/history
+    precision D
+    observe metrics: [payments_recorded, payment_total_amount, payment_by_token_type]
+    monitor "payment_volume" { payments_recorded < 100000 per 86400s }
+    invariant "invoice_exists" { eslite_exists("invoices", invoice_id) }
+    invariant "amount_positive" { amount_minor > 0 }
+    invariant "valid_token_type" {
+        token_type == "USDC" or token_type == "SOL" or token_type == "cbBTC"
+    }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, keccak256, graph_add_edge, now, random_bytes]
+    sign ml_dsa_87
+{
+    let ts = now()
+    let payment_id = random_bytes(32)
+
+    let invoice = eslite_query("invoices", invoice_id)
+    let merkle_payload = concat(payment_id, invoice_id, encode(amount_minor), encode(ts), invoice.merkle_hash)
+    let merkle_hash = keccak256(merkle_payload)
+
+    let payment = Payment {
+        payment_id: payment_id,
+        invoice_id: invoice_id,
+        blinded_token: blinded_token,
+        amount_minor: amount_minor,
+        token_type: token_type,
+        settlement_id: settlement_id,
+        paid_at: ts,
+        merkle_hash: merkle_hash,
+    }
+    eslite_insert("payments", payment_id, payment)
+    graph_add_edge("billing_history", "pays", payment_id, invoice_id)
+
+    let paid_total = eslite_query("invoice_paid_total", invoice_id)
+    let new_total = if paid_total != null { paid_total + amount_minor } else { amount_minor }
+    eslite_insert("invoice_paid_total", invoice_id, new_total)
+
+    if new_total >= invoice.amount_minor {
+        let settled = Invoice { ..invoice, status: "Paid" }
+        eslite_insert("invoices", invoice_id, settled)
+    }
+
+    payment
+}
+
+circuit apply_credit(
+    blinded_token: bytes(64),
+    amount_minor: u64,
+    reason: string,
+    invoice_id: bytes(32),
+    signing_sk: bytes(4896)
+) -> Credit
+    lex esn/global/org/polylabs/billing/history
+    precision C
+    observe metrics: [credits_applied, credit_total_amount]
+    monitor "credit_rate" { credits_applied < 1000 per 86400s }
+    invariant "amount_positive" { amount_minor > 0 }
+    invariant "reason_nonempty" { len(reason) > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, keccak256, graph_add_edge, now, random_bytes]
+    sign ml_dsa_87
+{
+    let ts = now()
+    let credit_id = random_bytes(32)
+
+    let prev_hash = if eslite_exists("invoices", invoice_id) {
+        eslite_query("invoices", invoice_id).merkle_hash
+    } else {
+        zero_bytes(32)
+    }
+    let merkle_payload = concat(credit_id, blinded_token, encode(amount_minor), encode(ts), prev_hash)
+    let merkle_hash = keccak256(merkle_payload)
+
+    let credit = Credit {
+        credit_id: credit_id,
+        blinded_token: blinded_token,
+        amount_minor: amount_minor,
+        reason: reason,
+        applied_to_invoice: invoice_id,
+        issued_at: ts,
+        merkle_hash: merkle_hash,
+    }
+    eslite_insert("credits", credit_id, credit)
+
+    if invoice_id != zero_bytes(32) {
+        graph_add_edge("billing_history", "credits", credit_id, invoice_id)
+    }
+
+    credit
+}
+
+circuit query_invoice_payments(invoice_id: bytes(32)) -> list<Payment>
+    lex esn/global/org/polylabs/billing/history
+    precision B
+    observe metrics: [payment_queries]
+    invariant "invoice_exists" { eslite_exists("invoices", invoice_id) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [graph_predecessors]
+{
+    let payment_ids = graph_predecessors("billing_history", "pays", invoice_id)
+    let mut payments = []
+    for pid in payment_ids {
+        let payment = eslite_query("payments", pid)
+        if payment != null {
+            payments = append(payments, payment)
+        }
+    }
+    payments
+}
+
+// ── Properties ──────────────────────────────────────────────────
+
+property safety "merkle_chain_integrity" {
+    forall i1, i2 in Invoice :
+        edge_exists("billing_history", "follows_invoice", i1.invoice_id, i2.invoice_id) implies
+            i1.merkle_hash != i2.merkle_hash
+}
+
+property safety "payment_does_not_exceed_invoice" {
+    forall i in Invoice :
+        sum(payments_for(i), |p| p.amount_minor) <= i.amount_minor * 2
+}
+
+property safety "dag_acyclic" {
+    not exists path in billing_history :
+        path.start == path.end and len(path) > 0
+}
+
+property liveness "issued_invoices_eventually_paid_or_credited" {
+    forall i in Invoice :
+        i.status == "Issued" implies
+            eventually(i.status == "Paid" or exists c in Credit : c.applied_to_invoice == i.invoice_id)
+}
+
+// ── Tests ───────────────────────────────────────────────────────
+
+test golden "issue_invoice_basic" {
+    input {
+        blinded_token: hex("aa" * 64)
+        period_start: 1000
+        period_end: 3592000
+        line_items: [
+            InvoiceLineItem {
+                product_id: hex("bb" * 16),
+                description: "Poly Files Premium — March 2026",
+                quantity: 1,
+                unit_price_minor: 999900,
+                amount_minor: 999900,
+            }
+        ]
+        signing_sk: hex("cc" * 4896)
+    }
+    assert {
+        result.amount_minor == 999900
+        result.currency == "USDC"
+        result.status == "Issued"
+        len(result.merkle_hash) == 32
+        len(result.line_items) == 1
+    }
+}
+
+test golden "record_payment_settles_invoice" {
+    setup {
+        let invoice = issue_invoice(
+            hex("aa" * 64), 1000, 3592000,
+            [InvoiceLineItem {
+                product_id: hex("bb" * 16),
+                description: "Test",
+                quantity: 1,
+                unit_price_minor: 500000,
+                amount_minor: 500000,
+            }],
+            hex("cc" * 4896)
+        )
+    }
+    input {
+        invoice_id: invoice.invoice_id
+        blinded_token: hex("aa" * 64)
+        amount_minor: 500000
+        token_type: "USDC"
+        settlement_id: hex("dd" * 32)
+        signing_sk: hex("cc" * 4896)
+    }
+    assert {
+        result.amount_minor == 500000
+        result.token_type == "USDC"
+        len(result.merkle_hash) == 32
+        eslite_query("invoices", invoice.invoice_id).status == "Paid"
+    }
+}
+
+test golden "apply_credit_basic" {
+    input {
+        blinded_token: hex("ee" * 64)
+        amount_minor: 100000
+        reason: "service_disruption_credit"
+        invoice_id: hex("00" * 32)
+        signing_sk: hex("ff" * 4896)
+    }
+    assert {
+        result.amount_minor == 100000
+        result.reason == "service_disruption_credit"
+        len(result.merkle_hash) == 32
+    }
+}

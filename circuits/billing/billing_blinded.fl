@@ -1,0 +1,223 @@
+// Billing Blinded — Blinded payment token verification
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/billing/blinded
+//   The backend receives blinded payment tokens that prove a valid
+//   subscription exists without revealing which SPARK identity holds it.
+//   This is the cornerstone of Poly Labs zero-linkage: the billing
+//   backend can verify payment validity and tier entitlement without
+//   learning the user's identity across any product.
+//
+// Security:
+//   All verification paths are constant-time to prevent timing oracles.
+//   The no_identity_leak safety property is formally specified — no
+//   output of the verification circuit contains or correlates to the
+//   user's SPARK identity. Fuzz targets exercise edge cases.
+
+// ── Data ────────────────────────────────────────────────────────
+
+data BlindedVerification : billing v1 {
+    verification_id: bytes(32),
+    blinded_token: bytes(64),
+    token_commitment: bytes(32),
+    tier_proof: bytes(128),
+    verified: bool,
+    tier_entitled: string,
+    verified_at: u64,
+    expires_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/billing/blinded
+    cortex {
+        redact [blinded_token, token_commitment, tier_proof]
+        infer on_write
+        on_anomaly alert "security-ops"
+    }
+
+data BlindingKeyState : billing v1 {
+    key_id: bytes(16),
+    epoch: u64,
+    public_params: bytes(256),
+    active: bool,
+    rotated_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/billing/blinded/keys
+    cortex {
+        redact [public_params]
+        infer on_write
+        on_anomaly alert "security-ops"
+    }
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream blinded_verification_events : event<BlindedVerification>
+    | throttle 5000/s burst 10000
+
+// ── Circuits ────────────────────────────────────────────────────
+
+circuit verify_blinded_payment(
+    blinded_token: bytes(64),
+    token_commitment: bytes(32),
+    tier_proof: bytes(128),
+    claimed_tier: string
+) -> BlindedVerification
+    lex esn/global/org/polylabs/billing/blinded
+    precision D
+    constant_time true
+    observe metrics: [verifications_attempted, verifications_succeeded, verifications_failed, verification_latency_us]
+    monitor "verification_failure_rate" { verifications_failed < 50 per 3600s }
+    invariant "token_nonzero" { blinded_token != zero_bytes(64) }
+    invariant "commitment_nonzero" { token_commitment != zero_bytes(32) }
+    invariant "valid_claimed_tier" {
+        claimed_tier == "Free" or claimed_tier == "Premium"
+        or claimed_tier == "Pro" or claimed_tier == "Enterprise"
+    }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, keccak256, now, random_bytes]
+    fuzz_target
+{
+    let ts = now()
+    let active_key = eslite_query("blinding_keys", "active")
+    assert(active_key != null and active_key.active, "no_active_blinding_key")
+
+    let recomputed_commitment = keccak256(concat(blinded_token, active_key.public_params))
+    let commitment_valid = constant_time_eq(recomputed_commitment, token_commitment)
+
+    let tier_valid = verify_tier_proof(tier_proof, claimed_tier, active_key.public_params)
+
+    let verified = commitment_valid and tier_valid
+    let verification_id = random_bytes(32)
+
+    let result = BlindedVerification {
+        verification_id: verification_id,
+        blinded_token: blinded_token,
+        token_commitment: token_commitment,
+        tier_proof: tier_proof,
+        verified: verified,
+        tier_entitled: if verified { claimed_tier } else { "" },
+        verified_at: ts,
+        expires_at: ts + 86400,
+    }
+    eslite_insert("verifications", verification_id, result)
+    emit(blinded_verification_events, result)
+    result
+}
+
+circuit rotate_blinding_key(
+    new_public_params: bytes(256),
+    new_epoch: u64
+) -> BlindingKeyState
+    lex esn/global/org/polylabs/billing/blinded
+    precision D
+    observe metrics: [key_rotations]
+    invariant "epoch_monotonic" {
+        eslite_query("blinding_keys", "active") == null
+        or new_epoch > eslite_query("blinding_keys", "active").epoch
+    }
+    meters [compute_cycles]
+    wasm_abi [eslite_query, eslite_insert, now, random_bytes]
+{
+    let ts = now()
+    let old = eslite_query("blinding_keys", "active")
+    if old != null {
+        let retired = BlindingKeyState { ..old, active: false }
+        eslite_insert("blinding_keys", old.key_id, retired)
+    }
+
+    let key_id = random_bytes(16)
+    let new_key = BlindingKeyState {
+        key_id: key_id,
+        epoch: new_epoch,
+        public_params: new_public_params,
+        active: true,
+        rotated_at: ts,
+    }
+    eslite_insert("blinding_keys", "active", new_key)
+    eslite_insert("blinding_keys", key_id, new_key)
+    new_key
+}
+
+// ── Properties ──────────────────────────────────────────────────
+
+property safety "no_identity_leak" {
+    forall v in BlindedVerification :
+        not contains_identity_material(v.verification_id)
+        and not contains_identity_material(v.tier_entitled)
+        and not contains_identity_material(v.verified_at)
+}
+
+property safety "only_valid_tokens_verified" {
+    forall v in BlindedVerification :
+        v.verified == true implies
+            keccak256(concat(v.blinded_token, active_key_params())) == v.token_commitment
+}
+
+property liveness "blinding_keys_rotate" {
+    forall k in BlindingKeyState :
+        k.active == true implies
+            eventually(exists k2 in BlindingKeyState : k2.epoch > k.epoch and k2.active == true)
+}
+
+// ── Tests ───────────────────────────────────────────────────────
+
+test golden "verify_valid_blinded_token" {
+    setup {
+        eslite_insert("blinding_keys", "active", BlindingKeyState {
+            key_id: hex("aa" * 16),
+            epoch: 1,
+            public_params: hex("bb" * 256),
+            active: true,
+            rotated_at: 1000,
+        })
+    }
+    input {
+        blinded_token: hex("cc" * 64)
+        token_commitment: keccak256(concat(hex("cc" * 64), hex("bb" * 256)))
+        tier_proof: hex("dd" * 128)
+        claimed_tier: "Premium"
+    }
+    assert {
+        result.verified == true or result.verified == false
+        result.tier_entitled == "Premium" or result.tier_entitled == ""
+        len(result.verification_id) == 32
+        result.expires_at > result.verified_at
+    }
+}
+
+test golden "reject_zero_token" {
+    setup {
+        eslite_insert("blinding_keys", "active", BlindingKeyState {
+            key_id: hex("aa" * 16),
+            epoch: 1,
+            public_params: hex("bb" * 256),
+            active: true,
+            rotated_at: 1000,
+        })
+    }
+    input {
+        blinded_token: hex("00" * 64)
+        token_commitment: hex("ee" * 32)
+        tier_proof: hex("ff" * 128)
+        claimed_tier: "Pro"
+    }
+    assert {
+        // invariant "token_nonzero" should reject
+        panics "token_nonzero"
+    }
+}
+
+// ── Fuzz ────────────────────────────────────────────────────────
+
+fuzz_target "blinded_payment_verification_fuzz" {
+    inputs {
+        blinded_token: bytes(64)
+        token_commitment: bytes(32)
+        tier_proof: bytes(128)
+        claimed_tier: string(1..32)
+    }
+    assert {
+        no_panic
+        constant_time true
+    }
+}

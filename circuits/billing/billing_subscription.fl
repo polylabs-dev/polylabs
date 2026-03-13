@@ -1,0 +1,262 @@
+// Billing Subscription — Tier management finite state machine
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/billing/subscription
+//   Subscription tiers (Free → Premium → Pro → Enterprise) are managed as an
+//   FSM with WAL-persisted transitions. Promotions and downgrades follow
+//   defined edges; the Cancelled state is terminal. AI anomaly detection
+//   flags unusual tier-change velocity (e.g. rapid upgrade/downgrade cycling).
+//
+// Privacy:
+//   Subscription state is stored under the billing lex namespace. The
+//   backend knows the tier but NOT the identity — the blinded payment
+//   system provides the correlation boundary.
+
+// ── State Machine ───────────────────────────────────────────────
+
+state_machine subscription_tier {
+    initial Free
+    persistence wal
+    terminal [Cancelled]
+    ai_anomaly_detection true
+
+    state Free {
+        on promote_premium -> Premium
+        on promote_pro -> Pro
+        on promote_enterprise -> Enterprise
+        on cancel -> Cancelled
+    }
+
+    state Premium {
+        on promote_pro -> Pro
+        on promote_enterprise -> Enterprise
+        on downgrade_free -> Free
+        on cancel -> Cancelled
+    }
+
+    state Pro {
+        on promote_enterprise -> Enterprise
+        on downgrade_premium -> Premium
+        on downgrade_free -> Free
+        on cancel -> Cancelled
+    }
+
+    state Enterprise {
+        on downgrade_pro -> Pro
+        on downgrade_premium -> Premium
+        on downgrade_free -> Free
+        on cancel -> Cancelled
+    }
+
+    state Cancelled {}
+}
+
+// ── Data ────────────────────────────────────────────────────────
+
+data SubscriptionState : billing v1 {
+    subscription_id: bytes(32),
+    blinded_token: bytes(64),
+    current_tier: string,
+    previous_tier: string,
+    tier_changed_at: u64,
+    billing_cycle_start: u64,
+    billing_cycle_end: u64,
+    auto_renew: bool,
+    created_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/billing/subscription
+    cortex {
+        redact [blinded_token]
+        infer on_write
+        on_anomaly alert "billing-ops"
+    }
+
+data TierTransition : billing v1 {
+    transition_id: bytes(16),
+    subscription_id: bytes(32),
+    from_tier: string,
+    to_tier: string,
+    reason: string,
+    transitioned_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/billing/subscription/transition
+    cortex {
+        redact []
+        infer on_write
+        on_anomaly alert "billing-ops"
+    }
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream subscription_events : event<TierTransition>
+    | throttle 1000/s burst 2000
+
+// ── Circuits ────────────────────────────────────────────────────
+
+circuit transition_tier(
+    subscription_id: bytes(32),
+    target_tier: string,
+    reason: string
+) -> TierTransition
+    lex esn/global/org/polylabs/billing/subscription
+    precision C
+    observe metrics: [tier_transitions, promotions, downgrades, cancellations]
+    monitor "tier_churn" { tier_transitions < 50 per 3600s }
+    invariant "subscription_exists" { eslite_exists("subscriptions", subscription_id) }
+    invariant "valid_tier" {
+        target_tier == "Free" or target_tier == "Premium"
+        or target_tier == "Pro" or target_tier == "Enterprise"
+        or target_tier == "Cancelled"
+    }
+    invariant "not_already_cancelled" {
+        eslite_query("subscriptions", subscription_id).current_tier != "Cancelled"
+    }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, now, random_bytes]
+{
+    let ts = now()
+    let sub = eslite_query("subscriptions", subscription_id)
+    let transition_id = random_bytes(16)
+
+    let transition = TierTransition {
+        transition_id: transition_id,
+        subscription_id: subscription_id,
+        from_tier: sub.current_tier,
+        to_tier: target_tier,
+        reason: reason,
+        transitioned_at: ts,
+    }
+
+    let updated = SubscriptionState {
+        ..sub,
+        previous_tier: sub.current_tier,
+        current_tier: target_tier,
+        tier_changed_at: ts,
+    }
+    eslite_insert("subscriptions", subscription_id, updated)
+    eslite_insert("tier_transitions", transition_id, transition)
+    emit(subscription_events, transition)
+    transition
+}
+
+circuit create_subscription(
+    blinded_token: bytes(64),
+    initial_tier: string
+) -> SubscriptionState
+    lex esn/global/org/polylabs/billing/subscription
+    precision C
+    observe metrics: [subscriptions_created]
+    invariant "valid_initial_tier" {
+        initial_tier == "Free" or initial_tier == "Premium"
+        or initial_tier == "Pro" or initial_tier == "Enterprise"
+    }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now, random_bytes]
+{
+    let ts = now()
+    let subscription_id = random_bytes(32)
+    let sub = SubscriptionState {
+        subscription_id: subscription_id,
+        blinded_token: blinded_token,
+        current_tier: initial_tier,
+        previous_tier: "",
+        tier_changed_at: ts,
+        billing_cycle_start: ts,
+        billing_cycle_end: ts + 2592000,
+        auto_renew: true,
+        created_at: ts,
+    }
+    eslite_insert("subscriptions", subscription_id, sub)
+    sub
+}
+
+// ── Properties ──────────────────────────────────────────────────
+
+property safety "cancelled_is_terminal" {
+    forall s in SubscriptionState :
+        s.current_tier == "Cancelled" implies
+            not exists t in TierTransition :
+                t.subscription_id == s.subscription_id and t.from_tier == "Cancelled"
+}
+
+property safety "tier_always_valid" {
+    forall s in SubscriptionState :
+        s.current_tier == "Free" or s.current_tier == "Premium"
+        or s.current_tier == "Pro" or s.current_tier == "Enterprise"
+        or s.current_tier == "Cancelled"
+}
+
+property liveness "free_tier_can_upgrade" {
+    forall s in SubscriptionState :
+        s.current_tier == "Free" implies
+            eventually(s.current_tier != "Free")
+            or always(s.current_tier == "Free")
+}
+
+// ── Tests ───────────────────────────────────────────────────────
+
+test golden "create_free_subscription" {
+    input {
+        blinded_token: hex("aa" * 64)
+        initial_tier: "Free"
+    }
+    assert {
+        result.current_tier == "Free"
+        result.previous_tier == ""
+        result.auto_renew == true
+        result.billing_cycle_end > result.billing_cycle_start
+    }
+}
+
+test golden "promote_free_to_premium" {
+    setup {
+        eslite_insert("subscriptions", hex("bb" * 32), SubscriptionState {
+            subscription_id: hex("bb" * 32),
+            blinded_token: hex("cc" * 64),
+            current_tier: "Free",
+            previous_tier: "",
+            tier_changed_at: 1000,
+            billing_cycle_start: 1000,
+            billing_cycle_end: 3592000,
+            auto_renew: true,
+            created_at: 1000,
+        })
+    }
+    input {
+        subscription_id: hex("bb" * 32)
+        target_tier: "Premium"
+        reason: "user_upgrade"
+    }
+    assert {
+        result.from_tier == "Free"
+        result.to_tier == "Premium"
+        result.reason == "user_upgrade"
+    }
+}
+
+test golden "cancel_subscription" {
+    setup {
+        eslite_insert("subscriptions", hex("dd" * 32), SubscriptionState {
+            subscription_id: hex("dd" * 32),
+            blinded_token: hex("ee" * 64),
+            current_tier: "Pro",
+            previous_tier: "Premium",
+            tier_changed_at: 2000,
+            billing_cycle_start: 2000,
+            billing_cycle_end: 4592000,
+            auto_renew: true,
+            created_at: 1000,
+        })
+    }
+    input {
+        subscription_id: hex("dd" * 32)
+        target_tier: "Cancelled"
+        reason: "user_requested"
+    }
+    assert {
+        result.from_tier == "Pro"
+        result.to_tier == "Cancelled"
+    }
+}

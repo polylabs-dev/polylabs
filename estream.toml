@@ -1,0 +1,29 @@
+[package]
+name = "polylabs"
+version = "0.1.0"
+edition = "0.11.0"
+description = "Poly Labs central backend — gateway, billing, admin, provisioning"
+repository = "https://github.com/polylabs-dev/polylabs"
+license = "Proprietary"
+
+[platform]
+estream = "0.11.0"
+polykit = "0.4.0"
+
+[dependencies]
+polykit_identity = { path = "../polykit/circuits/identity" }
+polykit_metering = { path = "../polykit/circuits/metering" }
+polykit_rate_limiter = { path = "../polykit/circuits/rate_limiter" }
+polykit_rbac = { path = "../polykit/circuits/rbac" }
+
+[circuits]
+path = "circuits"
+
+[codegen]
+targets = ["rust", "wasm", "typescript"]
+
+[signing]
+algorithm = "ml_dsa_87"
+
+[lex]
+root = "esn/global/org/polylabs"

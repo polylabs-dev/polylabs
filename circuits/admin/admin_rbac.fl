@@ -1,0 +1,295 @@
+// Admin RBAC — Platform-wide role-based access control graph
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/admin/rbac
+//   Four platform roles: PlatformAdmin (full control), ProductAdmin
+//   (per-product management), SupportAgent (read + support actions),
+//   BillingAdmin (billing + subscription management). Roles are modeled
+//   as a graph with permission edges. CSR storage with BRAM hot tier
+//   for low-latency permission checks.
+//
+// Composition:
+//   Composes PolyKit rbac primitives with platform-specific role
+//   definitions and the Poly Labs permission matrix.
+
+import polykit_rbac
+
+// ── Data ────────────────────────────────────────────────────────
+
+data AdminRole : admin v1 {
+    role_id: bytes(16),
+    role_name: string,
+    description: string,
+    priority: u8,
+    permissions_bitmask: u64,
+    created_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/admin/rbac/role
+    cortex {
+        redact []
+        infer on_write
+        on_anomaly alert "admin-ops"
+    }
+
+data AdminPermission : admin v1 {
+    permission_id: bytes(16),
+    permission_name: string,
+    resource_pattern: string,
+    action: string,
+    bit_position: u8,
+}
+    store kv
+    govern lex esn/global/org/polylabs/admin/rbac/permission
+    cortex {
+        redact []
+        infer on_write
+        on_anomaly alert "admin-ops"
+    }
+
+data RoleAssignment : admin v1 {
+    assignment_id: bytes(16),
+    principal_id: bytes(32),
+    role_id: bytes(16),
+    product_scope: bytes(16),
+    assigned_by: bytes(32),
+    assigned_at: u64,
+    expires_at: u64,
+    active: bool,
+}
+    store kv
+    govern lex esn/global/org/polylabs/admin/rbac/assignment
+    cortex {
+        redact [principal_id, assigned_by]
+        infer on_write
+        on_anomaly alert "admin-ops"
+    }
+
+// ── Graph ───────────────────────────────────────────────────────
+
+graph admin_role_graph {
+    node Role : AdminRole
+    node Permission : AdminPermission
+
+    edge grants : Role -> Permission
+    edge inherits : Role -> Role
+    edge scoped_to : Role -> Product
+
+    overlay permission_mask on Role { permissions_bitmask: u64 }
+    overlay role_priority on Role { priority: u8 }
+
+    storage csr {
+        tier bram { capacity: 1024 }
+        tier ddr { capacity: 65536 }
+    }
+
+    series role_assignment_history {
+        over nodes(Role)
+        fields: [assignment_count, revocation_count, active_principals]
+    }
+
+    sign ml_dsa_87
+    ai_feed admin_role_anomaly
+}
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream rbac_events : event<RoleAssignment>
+    | throttle 1000/s burst 2000
+
+// ── Circuits ────────────────────────────────────────────────────
+
+circuit assign_role(
+    principal_id: bytes(32),
+    role_id: bytes(16),
+    product_scope: bytes(16),
+    assigned_by: bytes(32),
+    ttl_seconds: u64
+) -> RoleAssignment
+    lex esn/global/org/polylabs/admin/rbac
+    precision C
+    observe metrics: [roles_assigned, assignments_by_role, assignments_by_scope]
+    monitor "role_assignment_rate" { roles_assigned < 100 per 3600s }
+    invariant "role_exists" { eslite_exists("admin_roles", role_id) }
+    invariant "assigner_is_admin" {
+        check_admin_permission(assigned_by, "assign_role")
+    }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, now, random_bytes]
+{
+    let ts = now()
+    let assignment_id = random_bytes(16)
+    let assignment = RoleAssignment {
+        assignment_id: assignment_id,
+        principal_id: principal_id,
+        role_id: role_id,
+        product_scope: product_scope,
+        assigned_by: assigned_by,
+        assigned_at: ts,
+        expires_at: ts + ttl_seconds,
+        active: true,
+    }
+    eslite_insert("role_assignments", assignment_id, assignment)
+    emit(rbac_events, assignment)
+    assignment
+}
+
+circuit revoke_role(
+    assignment_id: bytes(16),
+    revoked_by: bytes(32)
+) -> bool
+    lex esn/global/org/polylabs/admin/rbac
+    precision C
+    observe metrics: [roles_revoked]
+    invariant "assignment_exists" { eslite_exists("role_assignments", assignment_id) }
+    invariant "revoker_is_admin" {
+        check_admin_permission(revoked_by, "revoke_role")
+    }
+    meters [compute_cycles]
+    wasm_abi [eslite_query, eslite_insert]
+{
+    let assignment = eslite_query("role_assignments", assignment_id)
+    let revoked = RoleAssignment { ..assignment, active: false }
+    eslite_insert("role_assignments", assignment_id, revoked)
+    true
+}
+
+circuit check_permission(
+    principal_id: bytes(32),
+    resource: string,
+    action: string,
+    product_scope: bytes(16)
+) -> bool
+    lex esn/global/org/polylabs/admin/rbac
+    precision B
+    observe metrics: [permission_checks, permission_grants, permission_denials]
+    invariant "principal_nonzero" { principal_id != zero_bytes(32) }
+    meters [compute_cycles]
+    wasm_abi [eslite_scan, eslite_query, now]
+{
+    let assignments = eslite_scan("role_assignments", principal_id)
+    let ts = now()
+    for a in assignments {
+        if a.active and a.expires_at > ts {
+            if a.product_scope == product_scope or a.product_scope == zero_bytes(16) {
+                let role = eslite_query("admin_roles", a.role_id)
+                let perms = eslite_scan("role_permissions", a.role_id)
+                for p in perms {
+                    if matches_resource(p.resource_pattern, resource) and p.action == action {
+                        return true
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+circuit initialize_platform_roles() -> bool
+    lex esn/global/org/polylabs/admin/rbac
+    precision C
+    observe metrics: [roles_initialized]
+    invariant "not_already_initialized" {
+        not eslite_exists("admin_roles", hex("01" * 16))
+    }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+{
+    let ts = now()
+
+    eslite_insert("admin_roles", hex("01" * 16), AdminRole {
+        role_id: hex("01" * 16),
+        role_name: "PlatformAdmin",
+        description: "Full platform control — all products, all operations",
+        priority: 0,
+        permissions_bitmask: 0xFFFFFFFFFFFFFFFF,
+        created_at: ts,
+    })
+
+    eslite_insert("admin_roles", hex("02" * 16), AdminRole {
+        role_id: hex("02" * 16),
+        role_name: "ProductAdmin",
+        description: "Per-product administration — scoped to one product namespace",
+        priority: 1,
+        permissions_bitmask: 0x00FFFFFFFFFFFFFF,
+        created_at: ts,
+    })
+
+    eslite_insert("admin_roles", hex("03" * 16), AdminRole {
+        role_id: hex("03" * 16),
+        role_name: "SupportAgent",
+        description: "Read access and support actions — no write to config or billing",
+        priority: 2,
+        permissions_bitmask: 0x000000FFFFFFFFFF,
+        created_at: ts,
+    })
+
+    eslite_insert("admin_roles", hex("04" * 16), AdminRole {
+        role_id: hex("04" * 16),
+        role_name: "BillingAdmin",
+        description: "Billing and subscription management — no product config access",
+        priority: 1,
+        permissions_bitmask: 0x0000FFFFFFFFFFFF,
+        created_at: ts,
+    })
+
+    true
+}
+
+// ── Properties ──────────────────────────────────────────────────
+
+property safety "expired_assignments_deny" {
+    forall a in RoleAssignment :
+        a.expires_at < now() implies
+            not check_permission(a.principal_id, "*", "*", a.product_scope)
+}
+
+property safety "revoked_assignments_deny" {
+    forall a in RoleAssignment :
+        a.active == false implies
+            not granted_via(a.assignment_id)
+}
+
+property liveness "assignments_eventually_expire" {
+    forall a in RoleAssignment :
+        a.active == true implies
+            eventually(now() > a.expires_at or a.active == false)
+}
+
+// ── Tests ───────────────────────────────────────────────────────
+
+test golden "initialize_four_roles" {
+    input {}
+    assert {
+        result == true
+        eslite_query("admin_roles", hex("01" * 16)).role_name == "PlatformAdmin"
+        eslite_query("admin_roles", hex("02" * 16)).role_name == "ProductAdmin"
+        eslite_query("admin_roles", hex("03" * 16)).role_name == "SupportAgent"
+        eslite_query("admin_roles", hex("04" * 16)).role_name == "BillingAdmin"
+    }
+}
+
+test golden "assign_and_check_permission" {
+    setup {
+        eslite_insert("admin_roles", hex("01" * 16), AdminRole {
+            role_id: hex("01" * 16),
+            role_name: "PlatformAdmin",
+            description: "Full platform control",
+            priority: 0,
+            permissions_bitmask: 0xFFFFFFFFFFFFFFFF,
+            created_at: 1000,
+        })
+    }
+    input {
+        principal_id: hex("aa" * 32)
+        role_id: hex("01" * 16)
+        product_scope: hex("00" * 16)
+        assigned_by: hex("bb" * 32)
+        ttl_seconds: 86400
+    }
+    assert {
+        result.active == true
+        result.role_id == hex("01" * 16)
+        result.expires_at > result.assigned_at
+    }
+}

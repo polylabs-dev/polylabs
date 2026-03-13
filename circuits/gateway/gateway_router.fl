@@ -1,0 +1,197 @@
+// Gateway Router — Wire protocol demux routing to per-product lex namespaces
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/gateway/router
+//   Every inbound request is classified by product_id and routed into the
+//   product's isolated lex namespace. Unknown products are blocked at the
+//   guard layer — no request touches a product namespace without explicit
+//   registration in the route table.
+//
+// Privacy:
+//   The router is product-aware but identity-blind. It sees product_id and
+//   request metadata, never user identity or session tokens. This enforces
+//   the zero-linkage boundary at the outermost edge.
+
+import polykit_identity
+import polykit_rate_limiter
+
+// ── Data ────────────────────────────────────────────────────────
+
+data RouteConfig : gateway v1 {
+    product_id: bytes(16),
+    product_name: string,
+    lex_namespace: string,
+    wire_protocol_version: u16,
+    max_payload_bytes: u64,
+    enabled: bool,
+    priority: u8,
+    created_at: u64,
+    updated_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/gateway/router/config
+    cortex {
+        redact []
+        infer on_write
+        on_anomaly alert "gateway-ops"
+    }
+
+data RouteResult : gateway v1 {
+    request_id: bytes(16),
+    product_id: bytes(16),
+    target_namespace: string,
+    latency_us: u64,
+    routed: bool,
+    reason: string,
+    timestamp: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/gateway/router/result
+    cortex {
+        redact []
+        infer on_write
+        on_anomaly alert "gateway-ops"
+    }
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream route_events : event<RouteResult>
+    | throttle 10000/s burst 20000
+
+// ── Circuit ─────────────────────────────────────────────────────
+
+@guard(block_on: unknown_product)
+circuit route_request(
+    request_id: bytes(16),
+    product_id: bytes(16),
+    payload_size: u64,
+    wire_version: u16
+) -> RouteResult
+    lex esn/global/org/polylabs/gateway/router
+    precision C
+    observe metrics: [requests_routed, requests_blocked, routing_latency_us, unknown_product_count]
+    monitor "routing_throughput" { requests_routed < 100000 per 60s }
+    invariant "payload_within_bounds" { payload_size <= eslite_query("route_configs", product_id).max_payload_bytes }
+    invariant "wire_version_supported" { wire_version >= 1 and wire_version <= 3 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, now]
+    cortex policy: product_routing
+{
+    let ts = now()
+    let config = eslite_query("route_configs", product_id)
+
+    if config == null or not config.enabled {
+        let blocked = RouteResult {
+            request_id: request_id,
+            product_id: product_id,
+            target_namespace: "",
+            latency_us: 0,
+            routed: false,
+            reason: "unknown_or_disabled_product",
+            timestamp: ts,
+        }
+        emit(route_events, blocked)
+        return blocked
+    }
+
+    if wire_version < config.wire_protocol_version {
+        let version_mismatch = RouteResult {
+            request_id: request_id,
+            product_id: product_id,
+            target_namespace: config.lex_namespace,
+            latency_us: 0,
+            routed: false,
+            reason: "wire_version_mismatch",
+            timestamp: ts,
+        }
+        emit(route_events, version_mismatch)
+        return version_mismatch
+    }
+
+    let start = now()
+    let result = RouteResult {
+        request_id: request_id,
+        product_id: product_id,
+        target_namespace: config.lex_namespace,
+        latency_us: now() - start,
+        routed: true,
+        reason: "ok",
+        timestamp: ts,
+    }
+    eslite_insert("route_results", request_id, result)
+    emit(route_events, result)
+    result
+}
+
+circuit register_product_route(config: RouteConfig) -> bool
+    lex esn/global/org/polylabs/gateway/router
+    precision C
+    observe metrics: [routes_registered, route_updates]
+    invariant "product_id_nonzero" { config.product_id != zero_bytes(16) }
+    invariant "namespace_nonempty" { len(config.lex_namespace) > 0 }
+    meters [compute_cycles]
+    wasm_abi [eslite_insert, now]
+{
+    let stamped = RouteConfig {
+        ..config,
+        updated_at: now(),
+    }
+    eslite_insert("route_configs", config.product_id, stamped)
+    true
+}
+
+// ── Properties ──────────────────────────────────────────────────
+
+property safety "no_route_to_disabled" {
+    forall r in RouteResult :
+        r.routed == true implies
+            eslite_query("route_configs", r.product_id).enabled == true
+}
+
+property liveness "registered_products_routable" {
+    forall c in RouteConfig :
+        c.enabled == true implies
+            exists r in RouteResult : r.product_id == c.product_id and r.routed == true
+}
+
+// ── Tests ───────────────────────────────────────────────────────
+
+test golden "route_known_product" {
+    setup {
+        eslite_insert("route_configs", hex("aa" * 16), RouteConfig {
+            product_id: hex("aa" * 16),
+            product_name: "polyfiles",
+            lex_namespace: "esn/global/org/polylabs/files",
+            wire_protocol_version: 1,
+            max_payload_bytes: 67108864,
+            enabled: true,
+            priority: 1,
+            created_at: 1000,
+            updated_at: 1000,
+        })
+    }
+    input {
+        request_id: hex("bb" * 16)
+        product_id: hex("aa" * 16)
+        payload_size: 1024
+        wire_version: 1
+    }
+    assert {
+        result.routed == true
+        result.target_namespace == "esn/global/org/polylabs/files"
+        result.reason == "ok"
+    }
+}
+
+test golden "block_unknown_product" {
+    input {
+        request_id: hex("cc" * 16)
+        product_id: hex("ff" * 16)
+        payload_size: 512
+        wire_version: 1
+    }
+    assert {
+        result.routed == false
+        result.reason == "unknown_or_disabled_product"
+    }
+}

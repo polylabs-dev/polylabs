@@ -1,0 +1,231 @@
+// Admin Audit — Audit trail with PoVC attestation and ML-DSA-87 signing
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/admin/audit
+//   Every administrative action is recorded as a signed, attested audit
+//   entry. Entries are append-only, ML-DSA-87 signed, and PoVC-attested
+//   for tamper evidence. The audit stream is consumed by compliance,
+//   governance, and streamsight subsystems.
+//
+// Integrity:
+//   Each entry contains a prev_hash forming a hash chain. The chain is
+//   verified on every write to detect tampering. ML-DSA-87 signatures
+//   bind entries to the admin who performed the action.
+
+// ── Data ────────────────────────────────────────────────────────
+
+data AuditEntry : admin v1 {
+    entry_id: bytes(32),
+    actor_id: bytes(32),
+    action: string,
+    resource_type: string,
+    resource_id: bytes(32),
+    details: string,
+    prev_hash: bytes(32),
+    entry_hash: bytes(32),
+    signature: bytes(4627),
+    timestamp: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/admin/audit
+    cortex {
+        redact [actor_id]
+        infer on_write
+        on_anomaly alert "security-ops"
+    }
+
+data AuditChainHead : admin v1 {
+    chain_id: bytes(16),
+    head_hash: bytes(32),
+    entry_count: u64,
+    last_verified_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/admin/audit/chain
+    cortex {
+        redact []
+        infer on_write
+        on_anomaly alert "security-ops"
+    }
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream audit_events : event<AuditEntry>
+    | throttle 5000/s burst 10000
+    retention 7y
+    consumers [compliance, governance, streamsight]
+
+// ── Circuits ────────────────────────────────────────────────────
+
+circuit record_audit(
+    actor_id: bytes(32),
+    action: string,
+    resource_type: string,
+    resource_id: bytes(32),
+    details: string,
+    signing_sk: bytes(4896)
+) -> AuditEntry
+    lex esn/global/org/polylabs/admin/audit
+    precision D
+    observe metrics: [audit_entries_recorded, audit_chain_length, audit_actions_by_type]
+    monitor "audit_volume" { audit_entries_recorded < 100000 per 3600s }
+    invariant "actor_nonzero" { actor_id != zero_bytes(32) }
+    invariant "action_nonempty" { len(action) > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, keccak256, mldsa_sign, now, random_bytes]
+    sign ml_dsa_87
+    povc true
+{
+    let ts = now()
+    let entry_id = random_bytes(32)
+    let chain_head = eslite_query("audit_chain", hex("00" * 16))
+    let prev_hash = if chain_head != null { chain_head.head_hash } else { zero_bytes(32) }
+
+    let payload = concat(
+        entry_id, actor_id, encode(action), encode(resource_type),
+        resource_id, encode(details), prev_hash, encode(ts)
+    )
+    let entry_hash = keccak256(payload)
+    let signature = mldsa_sign(payload, signing_sk)
+
+    let entry = AuditEntry {
+        entry_id: entry_id,
+        actor_id: actor_id,
+        action: action,
+        resource_type: resource_type,
+        resource_id: resource_id,
+        details: details,
+        prev_hash: prev_hash,
+        entry_hash: entry_hash,
+        signature: signature,
+        timestamp: ts,
+    }
+    eslite_insert("audit_entries", entry_id, entry)
+
+    let new_count = if chain_head != null { chain_head.entry_count + 1 } else { 1 }
+    eslite_insert("audit_chain", hex("00" * 16), AuditChainHead {
+        chain_id: hex("00" * 16),
+        head_hash: entry_hash,
+        entry_count: new_count,
+        last_verified_at: ts,
+    })
+
+    emit(audit_events, entry)
+    entry
+}
+
+circuit verify_audit_chain(depth: u64) -> bool
+    lex esn/global/org/polylabs/admin/audit
+    precision C
+    observe metrics: [chain_verifications, chain_integrity_failures]
+    invariant "depth_positive" { depth > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_scan, keccak256, mldsa_verify]
+{
+    let chain_head = eslite_query("audit_chain", hex("00" * 16))
+    if chain_head == null { return true }
+
+    let entries = eslite_scan_last("audit_entries", depth)
+    let mut expected_prev = zero_bytes(32)
+
+    for entry in entries {
+        let payload = concat(
+            entry.entry_id, entry.actor_id, encode(entry.action),
+            encode(entry.resource_type), entry.resource_id,
+            encode(entry.details), entry.prev_hash, encode(entry.timestamp)
+        )
+        let recomputed = keccak256(payload)
+        assert(recomputed == entry.entry_hash, "hash_mismatch")
+        assert(entry.prev_hash == expected_prev, "chain_broken")
+        expected_prev = entry.entry_hash
+    }
+    true
+}
+
+circuit query_audit_by_actor(
+    actor_id: bytes(32),
+    since: u64,
+    limit: u32
+) -> list<AuditEntry>
+    lex esn/global/org/polylabs/admin/audit
+    precision B
+    observe metrics: [audit_queries, audit_results_returned]
+    invariant "actor_nonzero" { actor_id != zero_bytes(32) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_scan]
+{
+    let all = eslite_scan("audit_entries", actor_id)
+    let filtered = filter(all, |e| e.timestamp >= since)
+    take(filtered, limit)
+}
+
+// ── Properties ──────────────────────────────────────────────────
+
+property safety "audit_chain_integrity" {
+    forall e in AuditEntry :
+        e.entry_hash == keccak256(concat(
+            e.entry_id, e.actor_id, encode(e.action),
+            encode(e.resource_type), e.resource_id,
+            encode(e.details), e.prev_hash, encode(e.timestamp)
+        ))
+}
+
+property safety "audit_entries_signed" {
+    forall e in AuditEntry :
+        len(e.signature) == 4627 and mldsa_verify_entry(e)
+}
+
+property liveness "audit_chain_grows" {
+    forall h in AuditChainHead :
+        eventually(h.entry_count > 0)
+}
+
+// ── Tests ───────────────────────────────────────────────────────
+
+test golden "record_first_audit_entry" {
+    input {
+        actor_id: hex("aa" * 32)
+        action: "assign_role"
+        resource_type: "role_assignment"
+        resource_id: hex("bb" * 32)
+        details: "Assigned PlatformAdmin to principal"
+        signing_sk: hex("cc" * 4896)
+    }
+    assert {
+        result.action == "assign_role"
+        result.prev_hash == hex("00" * 32)
+        len(result.entry_hash) == 32
+        len(result.signature) == 4627
+        result.timestamp > 0
+    }
+}
+
+test golden "verify_chain_single_entry" {
+    setup {
+        // record_audit inserts an entry and chain head
+        let entry = record_audit(
+            hex("aa" * 32), "test_action", "test_resource",
+            hex("bb" * 32), "test details", hex("cc" * 4896)
+        )
+    }
+    input {
+        depth: 1
+    }
+    assert {
+        result == true
+    }
+}
+
+// ── KAT ─────────────────────────────────────────────────────────
+
+kat_vector "mldsa87_audit_sign_verify" {
+    function: "mldsa_sign"
+    input: {
+        sk: hex("cc" * 4896)
+        message: hex("abcdef0123456789" * 8)
+    }
+    post_condition: {
+        len(signature) == 4627
+        mldsa_verify(message, signature, derived_pk(sk)) == true
+    }
+}

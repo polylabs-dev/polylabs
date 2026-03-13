@@ -1,0 +1,286 @@
+// Billing Settlement — L2 multi-token settlement (USDC, SOL, cbBTC)
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/billing/settlement
+//   Settlements are processed through an FSM: Pending → Processing →
+//   Settled | Failed. Multi-token support covers USDC (primary), SOL
+//   (native), and cbBTC (Bitcoin-backed). Each settlement is
+//   independently WAL-persisted and ML-DSA-87 signed for audit trail.
+//
+// Privacy:
+//   Settlement references the blinded_token from billing_blinded.fl,
+//   never the user's SPARK identity. The L2 bridge sees amounts and
+//   token types but cannot deanonymize payers.
+
+// ── State Machine ───────────────────────────────────────────────
+
+state_machine settlement_fsm {
+    initial Pending
+    persistence wal
+    terminal [Settled, Failed]
+    ai_anomaly_detection true
+
+    state Pending {
+        on begin_processing -> Processing
+        on reject -> Failed
+    }
+
+    state Processing {
+        on confirm -> Settled
+        on timeout -> Failed
+        on revert -> Failed
+    }
+
+    state Settled {}
+    state Failed {}
+}
+
+// ── Data ────────────────────────────────────────────────────────
+
+data Settlement : billing v1 {
+    settlement_id: bytes(32),
+    blinded_token: bytes(64),
+    token_type: string,
+    amount_minor: u64,
+    currency_decimals: u8,
+    l2_tx_hash: bytes(32),
+    destination_address: bytes(32),
+    state: string,
+    created_at: u64,
+    updated_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/billing/settlement
+    cortex {
+        redact [blinded_token, destination_address, l2_tx_hash]
+        infer on_write
+        on_anomaly alert "billing-ops"
+    }
+
+data SettlementResult : billing v1 {
+    settlement_id: bytes(32),
+    success: bool,
+    l2_confirmation: bytes(32),
+    gas_used: u64,
+    finalized_at: u64,
+    error_reason: string,
+    signature: bytes(4627),
+}
+    store kv
+    govern lex esn/global/org/polylabs/billing/settlement/result
+    cortex {
+        redact [l2_confirmation, signature]
+        infer on_write
+        on_anomaly alert "billing-ops"
+    }
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream settlement_events : event<SettlementResult>
+    | throttle 1000/s burst 2000
+
+// ── Circuits ────────────────────────────────────────────────────
+
+circuit initiate_settlement(
+    blinded_token: bytes(64),
+    token_type: string,
+    amount_minor: u64,
+    currency_decimals: u8,
+    destination_address: bytes(32)
+) -> Settlement
+    lex esn/global/org/polylabs/billing/settlement
+    precision D
+    observe metrics: [settlements_initiated, settlement_amount_total, token_type_distribution]
+    monitor "settlement_volume" { settlements_initiated < 10000 per 3600s }
+    invariant "valid_token_type" {
+        token_type == "USDC" or token_type == "SOL" or token_type == "cbBTC"
+    }
+    invariant "amount_positive" { amount_minor > 0 }
+    invariant "destination_nonzero" { destination_address != zero_bytes(32) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now, random_bytes]
+{
+    let ts = now()
+    let settlement_id = random_bytes(32)
+    let settlement = Settlement {
+        settlement_id: settlement_id,
+        blinded_token: blinded_token,
+        token_type: token_type,
+        amount_minor: amount_minor,
+        currency_decimals: currency_decimals,
+        l2_tx_hash: zero_bytes(32),
+        destination_address: destination_address,
+        state: "Pending",
+        created_at: ts,
+        updated_at: ts,
+    }
+    eslite_insert("settlements", settlement_id, settlement)
+    settlement
+}
+
+circuit finalize_settlement(
+    settlement_id: bytes(32),
+    l2_confirmation: bytes(32),
+    gas_used: u64,
+    success: bool,
+    error_reason: string,
+    signing_sk: bytes(4896)
+) -> SettlementResult
+    lex esn/global/org/polylabs/billing/settlement
+    precision D
+    constant_time true
+    observe metrics: [settlements_finalized, settlements_succeeded, settlements_failed, gas_consumed]
+    monitor "settlement_failure_rate" { settlements_failed < 50 per 3600s }
+    invariant "settlement_exists" { eslite_exists("settlements", settlement_id) }
+    invariant "settlement_pending_or_processing" {
+        let s = eslite_query("settlements", settlement_id)
+        s.state == "Pending" or s.state == "Processing"
+    }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, mldsa_sign, now]
+    sign ml_dsa_87
+{
+    let ts = now()
+    let settlement = eslite_query("settlements", settlement_id)
+
+    let new_state = if success { "Settled" } else { "Failed" }
+    let updated = Settlement {
+        ..settlement,
+        l2_tx_hash: l2_confirmation,
+        state: new_state,
+        updated_at: ts,
+    }
+    eslite_insert("settlements", settlement_id, updated)
+
+    let payload = concat(settlement_id, l2_confirmation, encode(new_state))
+    let signature = mldsa_sign(payload, signing_sk)
+
+    let result = SettlementResult {
+        settlement_id: settlement_id,
+        success: success,
+        l2_confirmation: l2_confirmation,
+        gas_used: gas_used,
+        finalized_at: ts,
+        error_reason: error_reason,
+        signature: signature,
+    }
+    eslite_insert("settlement_results", settlement_id, result)
+    emit(settlement_events, result)
+    result
+}
+
+// ── Properties ──────────────────────────────────────────────────
+
+property safety "settled_has_confirmation" {
+    forall r in SettlementResult :
+        r.success == true implies r.l2_confirmation != zero_bytes(32)
+}
+
+property safety "terminal_state_immutable" {
+    forall s in Settlement :
+        (s.state == "Settled" or s.state == "Failed") implies
+            not exists s2 in Settlement :
+                s2.settlement_id == s.settlement_id and s2.updated_at > s.updated_at
+}
+
+property liveness "pending_settlements_resolve" {
+    forall s in Settlement :
+        s.state == "Pending" implies
+            eventually(s.state == "Settled" or s.state == "Failed")
+}
+
+// ── Tests ───────────────────────────────────────────────────────
+
+test golden "initiate_usdc_settlement" {
+    input {
+        blinded_token: hex("aa" * 64)
+        token_type: "USDC"
+        amount_minor: 999900
+        currency_decimals: 6
+        destination_address: hex("bb" * 32)
+    }
+    assert {
+        result.token_type == "USDC"
+        result.amount_minor == 999900
+        result.currency_decimals == 6
+        result.state == "Pending"
+        result.l2_tx_hash == hex("00" * 32)
+    }
+}
+
+test golden "finalize_successful_settlement" {
+    setup {
+        eslite_insert("settlements", hex("cc" * 32), Settlement {
+            settlement_id: hex("cc" * 32),
+            blinded_token: hex("dd" * 64),
+            token_type: "SOL",
+            amount_minor: 1500000000,
+            currency_decimals: 9,
+            l2_tx_hash: hex("00" * 32),
+            destination_address: hex("ee" * 32),
+            state: "Pending",
+            created_at: 1000,
+            updated_at: 1000,
+        })
+    }
+    input {
+        settlement_id: hex("cc" * 32)
+        l2_confirmation: hex("ff" * 32)
+        gas_used: 21000
+        success: true
+        error_reason: ""
+        signing_sk: hex("11" * 4896)
+    }
+    assert {
+        result.success == true
+        result.l2_confirmation == hex("ff" * 32)
+        result.gas_used == 21000
+        result.error_reason == ""
+        len(result.signature) == 4627
+    }
+}
+
+test golden "finalize_failed_settlement" {
+    setup {
+        eslite_insert("settlements", hex("22" * 32), Settlement {
+            settlement_id: hex("22" * 32),
+            blinded_token: hex("33" * 64),
+            token_type: "cbBTC",
+            amount_minor: 100000,
+            currency_decimals: 8,
+            l2_tx_hash: hex("00" * 32),
+            destination_address: hex("44" * 32),
+            state: "Processing",
+            created_at: 1000,
+            updated_at: 1500,
+        })
+    }
+    input {
+        settlement_id: hex("22" * 32)
+        l2_confirmation: hex("00" * 32)
+        gas_used: 0
+        success: false
+        error_reason: "l2_timeout"
+        signing_sk: hex("55" * 4896)
+    }
+    assert {
+        result.success == false
+        result.error_reason == "l2_timeout"
+        len(result.signature) == 4627
+    }
+}
+
+// ── Fuzz ────────────────────────────────────────────────────────
+
+fuzz_target "settlement_signing_fuzz" {
+    inputs {
+        settlement_id: bytes(32)
+        l2_confirmation: bytes(32)
+        gas_used: u64
+        signing_sk: bytes(4896)
+    }
+    assert {
+        no_panic
+        constant_time true
+    }
+}
