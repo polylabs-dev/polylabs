@@ -1,12 +1,16 @@
 # Poly Labs Central
 
 **GitHub**: [polylabs-dev/polylabs](https://github.com/polylabs-dev/polylabs)
-**Platform**: eStream v0.11.0
+**Platform**: eStream v0.22.0
 **Depends on**: PolyKit v0.4.0, eStream graph/DAG constructs
+
+100% FastLang. No hand-written Rust.
 
 ## Purpose
 
-Central monorepo for Poly Labs: backend services (gateway, billing, enterprise admin), PolySDKs (embeddable components for third-party apps), and the unified console (consumer dashboard + enterprise admin).
+Central monorepo for Poly Labs: backend services (gateway, billing, enterprise admin), and the unified console. All logic lives in FastLang circuits compiled via FLIR codegen.
+
+> **Note**: `crates/`, `sdks/`, and `console/` directories are legacy scaffolding superseded by FLIR codegen. All backend services, SDKs, and console functionality are now produced by FL circuit compilation.
 
 ## Zero-Linkage Privacy
 
@@ -14,14 +18,11 @@ This repo enforces the zero-linkage privacy architecture. The billing system use
 
 ## Structure
 
-- `circuits/` — FastLang circuit definitions (v0.11.0 pattern)
+- `circuits/` — FastLang circuit definitions (v0.22.0 pattern)
   - `gateway/` — Request routing, SPARK auth, global rate limiting (3 circuits)
   - `billing/` — Subscription FSM, 8D metering, blinded payments, L2 settlement (4 circuits)
   - `admin/` — Platform RBAC graph, audit trail, product provisioning (3 circuits)
   - `graphs/` — Tenant registry graph, billing history DAG (2 circuits)
-- `crates/` — Rust backend services (gateway, billing, admin)
-- `sdks/` — PolySDKs (`@polysdk/auth`, `@polysdk/messenger`, `@polysdk/data`, `@polysdk/suite`)
-- `console/` — React management UI (consumer + enterprise)
 - `marketplace/` — eStream Marketplace component manifests
 - `docs/` — Architecture and design documents
 
@@ -46,7 +47,7 @@ This repo enforces the zero-linkage privacy architecture. The billing system use
 
 Commit to the GitHub issue or epic the work was done under. Do not accumulate large amounts of uncommitted work.
 
-## v0.11.0 Circuit Pattern
+## v0.22.0 Circuit Pattern
 
 Every data declaration follows:
 ```
@@ -60,29 +61,11 @@ data X : namespace v1 {
 
 Every circuit must have: `lex`, `precision`, `observe metrics`, at least 1 `invariant`, at least 1 `property` (safety or liveness), at least 1 `test golden`.
 
-## Developer Language Story (v0.9.1)
+## Platform
 
-eStream supports **7 languages** at full parity: Rust (native), Python (PyO3), TypeScript (WASM), Go (CGo), C++ (FFI), Swift (C bridging), and FastLang (native).
-
-### External Messaging
-
-- Lead with **"7 supported languages"** — developers choose the language they already know
-- Position FastLang as **"the shortest path to silicon"** — the easiest way to design for eStream hardware
-- **ESCIR (eStream Circuit Intermediate Representation) is strictly internal** — never mention it in external-facing materials, docs, pitches, or marketing. It is an implementation detail of the compiler
-- Swift (not Solidity) is the 7th language
-
-### Internal Development
-
-- **FastLang first**: all new circuits and features are authored in FastLang (.fl) first
-- **Six-language parity**: every FastLang feature must have equivalent API surface in Rust, Python, TypeScript, Go, C++, and Swift. Do not ship a FastLang-only feature
-- Implementation types: FastLang (.fl), Hybrid (FastLang + Rust/RTL), Pure Rust, Pure RTL, Platform (tooling)
-- ESCIR operations power the compiler pipeline but are invisible to users
-
-## Cross-Repo Coordination
-
-This repo is part of the [polylabs-dev](https://github.com/polylabs-dev) organization, coordinated through the **AI Toolkit hub** at `toddrooke/ai-toolkit/`.
-
-For cross-repo context, strategic priorities, and the master work queue:
-- `toddrooke/ai-toolkit/CLAUDE-CONTEXT.md` — org map and priorities
-- `toddrooke/ai-toolkit/scratch/BACKLOG.md` — master backlog
-- `toddrooke/ai-toolkit/repos/polylabs-dev.md` — this org's status summary
+- eStream v0.22.0
+- PolyKit v0.4.0
+- FLIR codegen (FastLang → FLIR → Rust/WASM)
+- ML-KEM-1024, ML-DSA-87, SHA3-256
+- 8-Dimension metering
+- Blinded billing tokens

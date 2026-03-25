@@ -1,8 +1,8 @@
 # Poly Labs Suite — Graph/DAG Refactor Summary
 
-**Date**: February 2026
-**Platform**: eStream v0.9.1
-**PolyKit**: v0.3.0
+**Date**: February 2026 (updated March 2026)
+**Platform**: eStream v0.22.0
+**PolyKit**: v0.5.0
 
 ---
 
@@ -26,9 +26,9 @@ Every product is cryptographically isolated from every other. A subpoena for one
 | Repo | What | Status |
 |------|------|--------|
 | **polylabs-dev/CLAUDE.md** | Updated top-level with zero-linkage architecture, full repo map | Committed |
-| **polylabs/** (NEW) | Central monorepo: backend + PolySDKs + console. Blinded billing graph, enterprise org (composes `group_hierarchy.fl`), 4 marketplace SDK designs | Pushed to GitHub |
+| **polylabs/** (NEW) | Central monorepo: 12 FL circuits (gateway, billing, admin, tenant, SDK codegen, marketplace, metering, bridge, onboarding, compliance, notification, analytics) + FLIR-codegen'd PolySDKs + console | Pushed to GitHub |
 | **polykit/** | Architecture v0.3.0: composes eStream `rbac.fl`/`group_hierarchy.fl`/`issue_tracking.fl`, adds `user_graph` + `metering_graph` (per-app isolated), `subscription_lifecycle` state machine, `lex_bridge` spec | Feature branch pushed |
-| **polydata/** | Architecture v3.0: scatter-cas replaces custom CAS, poly-git wraps es-git, `file_registry` graph + `version_history` DAG + `share_network` graph, FastLang .fl replaces ESCIR YAML | Feature branch pushed |
+| **polydata/** | Architecture v3.0: scatter-cas replaces custom CAS, poly-git wraps es-git, `file_registry` graph + `version_history` DAG + `share_network` graph, FastLang .fl replaces legacy YAML | Feature branch pushed |
 | **polymessenger/** (NEW) | Fresh repo with 21 screens + 14 hooks + 7 type files extracted from polyquantum/polymessenger-app. `contact_network` graph + `message_thread` DAG + `relay_mesh` graph | Pushed to GitHub |
 | **polymail/** | Architecture with `mailbox_registry` graph + `email_thread` DAG + SMTP bridge | Pushed |
 | **polyvpn/** | Architecture with `vpn_exit_mesh` graph + `tunnel_route` DAG + traffic mimicry | Pushed |
@@ -64,7 +64,9 @@ Rather than reinventing core platform graphs, Poly Labs composes these eStream p
 | **PolyOAuth** | `identity_federation` | `token_chain` | `session_lifecycle` |
 | **PolyMind** | `knowledge_corpus` | `legacy_governance` | `ingestion_lifecycle`, `legacy_lifecycle` |
 
-**Totals**: 14 graphs, 7 DAGs, 9 state machines across 9 products.
+**Totals**: 14 graphs, 7 DAGs, 9 state machines across 9 initial products.
+
+> **March 2026 update**: The product family has expanded from 9 to **37 products across 7 verticals** (Productivity, Communication, Security & Identity, Developer Tools, Enterprise & Compliance, Consumer & Media, Hardware-Enhanced). The graph/DAG patterns established here are reused by all new products via PolyKit composition. Estimated ~355 product-level FL circuits total. Architecture is now fully FL-native — all hand-written Rust crates (`polylabs-gateway`, `polylabs-billing`, `polylabs-admin`) have been superseded by FLIR codegen from FL circuits. PolySDKs are generated from FL circuit signatures via `service_dispatch` + `tool_registry`. See `ARCHITECTURE.md` for the current system design.
 
 ---
 
