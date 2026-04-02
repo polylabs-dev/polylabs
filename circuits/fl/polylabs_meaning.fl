@@ -1,0 +1,217 @@
+/// Spec: specs/POLYLABS_CE_APP_GRAPH_SPEC.md
+/// PolyLabs Backend CE Meaning Domains — 3 meaning domains, 1 noise filter,
+/// 2 SME panels for the PolyLabs backend cognitive integration.
+///
+/// Epic: polylabs#TBD (CE + App Graph Integration)
+/// govern lex polylabs/backend/cognitive
+
+lex polylabs/backend/cognitive
+
+@target software
+@codegen_targets ["wasm", "rust"]
+
+import "polykit/circuits/fl/polykit_cognitive.fl" {
+    ProductMeaningDomain, MeaningIngestion, DomainId, MeaningId,
+    ObservationHash, NoiseFilterId, SmePanelId,
+    register_meaning_domain,
+}
+
+// ── Types ──────────────────────────────────────────────────────────────────────
+
+type PatternSignal = bytes(64)
+type ThresholdConfig = bytes(32)
+
+// ── Domain Data ─────────────────────────────────────────────────────────────────
+
+data GatewayHealthDomain : polylabs/cognitive v1 {
+    domain_id: DomainId, auth_failure_window_ms: u64,
+    auth_failure_threshold: u16, rate_limit_trigger_threshold: u16,
+    latency_p99_ceiling_ms: u32, error_rate_ceiling_bps: u16,
+}   store kv  govern lex polylabs/backend/cognitive
+    cortex { infer on_write; on_anomaly alert "platform-ops" }
+
+data BillingPatternsDomain : polylabs/cognitive v1 {
+    domain_id: DomainId, churn_signal_window_days: u16,
+    churn_confidence_threshold: u8, tier_migration_velocity_threshold: u8,
+    usage_spike_sigma: u8, payment_failure_streak_limit: u8,
+}   store kv  govern lex polylabs/backend/cognitive
+    cortex { infer on_write; on_anomaly alert "billing-team" }
+
+data TenantLifecycleDomain : polylabs/cognitive v1 {
+    domain_id: DomainId, provisioning_velocity_window_ms: u64,
+    provisioning_spike_threshold: u16, lex_utilization_low_watermark_bps: u16,
+    lex_utilization_high_watermark_bps: u16, inactive_tenant_days: u16,
+}   store kv  govern lex polylabs/backend/cognitive
+    cortex { infer on_write; on_anomaly alert "admin-team" }
+
+// ── Noise Filter ────────────────────────────────────────────────────────────────
+
+data PlatformNoiseFilterConfig : polylabs/cognitive v1 {
+    filter_id: NoiseFilterId, suppress_health_checks: bool,
+    suppress_internal_probes: bool, suppress_synthetic_traffic: bool,
+    health_check_user_agents: list<bytes(64)>,
+    internal_probe_source_prefixes: list<bytes(32)>,
+    min_signal_confidence: u8, dedup_window_ms: u64,
+}   store kv  govern lex polylabs/backend/cognitive
+    cortex { infer on_write }
+
+// ── SME Panels ──────────────────────────────────────────────────────────────────
+
+data GatewayOptimizationPanel : polylabs/cognitive v1 {
+    panel_id: SmePanelId, domain_scope: bytes(64), min_panelists: u8,
+    specializations: list<bytes(32)>, calibration_accuracy_floor_bps: u16,
+    review_timeout_ms: u64,
+}   store kv  govern lex polylabs/backend/cognitive
+    cortex { infer on_write; on_anomaly alert "platform-ops" }
+
+data BillingEvolutionPanel : polylabs/cognitive v1 {
+    panel_id: SmePanelId, domain_scope: bytes(64), min_panelists: u8,
+    specializations: list<bytes(32)>, calibration_accuracy_floor_bps: u16,
+    review_timeout_ms: u64,
+}   store kv  govern lex polylabs/backend/cognitive
+    cortex { infer on_write; on_anomaly alert "billing-team" }
+
+// ── Streams & Series ────────────────────────────────────────────────────────────
+
+stream gateway_health_obs  : event<MeaningIngestion> { retention 90d;  consumers [streamsight, cortex] }
+stream billing_pattern_obs : event<MeaningIngestion> { retention 365d; consumers [streamsight, cortex] }
+stream tenant_lifecycle_obs: event<MeaningIngestion> { retention 365d; consumers [streamsight, cortex, audit_trail] }
+
+series polylabs_cognitive_series {
+    over GatewayHealthDomain,
+    fields: [auth_failures_detected, rate_limit_triggers, health_score,
+             churn_signals, tier_migrations, provisioning_velocity]
+}
+
+extern {
+    fn store_get(table: string, key: bytes) -> bytes
+    fn store_put(table: string, key: bytes, value: bytes) -> bool
+    fn emit(stream: string, event: bytes) -> bool
+}
+
+// ── Domain Registration Circuits ────────────────────────────────────────────────
+
+circuit register_gateway_health_domain() -> ProductMeaningDomain
+    profile poly_framework_standard  lex polylabs/backend/cognitive  precision B
+    rbac [admin, operator]  observe metrics: [domains_registered]
+    meters [compute_cycles, memory_bytes, storage]
+    wasm_abi [store_get, store_put, emit, now]
+    test golden "register_gateway_health" {
+        let r = register_gateway_health_domain()
+        assert len(r.domain_id) == 32
+        assert r.crystallization_threshold == 70
+    }
+{ register_meaning_domain(bytes(128, "polylabs/backend"), bytes(64, "platform/gateway_health"),
+    bytes(256, "Auth failure patterns, rate limit triggers, latency anomalies"), 70, 80) }
+
+circuit register_billing_patterns_domain() -> ProductMeaningDomain
+    profile poly_framework_standard  lex polylabs/backend/cognitive  precision B
+    rbac [admin, operator]  observe metrics: [domains_registered]
+    meters [compute_cycles, memory_bytes, storage]
+    wasm_abi [store_get, store_put, emit, now]
+    test golden "register_billing_patterns" {
+        let r = register_billing_patterns_domain()
+        assert len(r.domain_id) == 32
+        assert r.crystallization_threshold == 80
+    }
+{ register_meaning_domain(bytes(128, "polylabs/backend"), bytes(64, "platform/billing_patterns"),
+    bytes(256, "Churn signals, tier migration velocity, usage spikes, payment failures"), 80, 90) }
+
+circuit register_tenant_lifecycle_domain() -> ProductMeaningDomain
+    profile poly_framework_standard  lex polylabs/backend/cognitive  precision B
+    rbac [admin, operator]  observe metrics: [domains_registered]
+    meters [compute_cycles, memory_bytes, storage]
+    wasm_abi [store_get, store_put, emit, now]
+    test golden "register_tenant_lifecycle" {
+        let r = register_tenant_lifecycle_domain()
+        assert len(r.domain_id) == 32
+        assert r.crystallization_threshold == 75
+    }
+{ register_meaning_domain(bytes(128, "polylabs/backend"), bytes(64, "platform/tenant_lifecycle"),
+    bytes(256, "Provisioning velocity, lex utilization trends, inactive tenant detection"), 75, 70) }
+
+// ── Noise Filter Setup ──────────────────────────────────────────────────────────
+
+circuit configure_platform_noise_filter() -> PlatformNoiseFilterConfig
+    profile poly_framework_standard  lex polylabs/backend/cognitive  precision B
+    rbac [admin]  observe metrics: [noise_filters_configured]
+    meters [compute_cycles, storage]  wasm_abi [store_get, store_put, emit, now]
+    test golden "configure_noise_filter" {
+        let r = configure_platform_noise_filter()
+        assert r.suppress_health_checks == true
+        assert r.min_signal_confidence == 60
+    }
+{
+    let fid = sha3_256(bytes(32, "polylabs/noise/platform"))
+    let cfg = PlatformNoiseFilterConfig {
+        filter_id: fid, suppress_health_checks: true,
+        suppress_internal_probes: true, suppress_synthetic_traffic: true,
+        health_check_user_agents: [bytes(64, "kube-probe"), bytes(64, "ELB-HealthChecker"), bytes(64, "GoogleHC")],
+        internal_probe_source_prefixes: [bytes(32, "10.0."), bytes(32, "172.16.")],
+        min_signal_confidence: 60, dedup_window_ms: 300000,
+    }
+    store_put("cognitive_noise_filters", fid, encode(cfg))
+    cfg
+}
+
+// ── SME Panel Setup ─────────────────────────────────────────────────────────────
+
+circuit configure_gateway_optimization_panel() -> GatewayOptimizationPanel
+    profile poly_framework_standard  lex polylabs/backend/cognitive  precision B
+    rbac [admin]  observe metrics: [sme_panels_configured]
+    meters [compute_cycles, storage]  wasm_abi [store_get, store_put, emit, now]
+    test golden "configure_gateway_panel" {
+        let r = configure_gateway_optimization_panel()
+        assert r.min_panelists == 3
+        assert r.calibration_accuracy_floor_bps >= 7000
+    }
+{
+    let pid = sha3_256(bytes(32, "polylabs/sme/gateway"))
+    let p = GatewayOptimizationPanel {
+        panel_id: pid, domain_scope: bytes(64, "platform/gateway_health"), min_panelists: 3,
+        specializations: [bytes(32, "auth_security"), bytes(32, "rate_limiting"),
+            bytes(32, "routing_optimization"), bytes(32, "latency_analysis")],
+        calibration_accuracy_floor_bps: 7500, review_timeout_ms: 86400000,
+    }
+    store_put("cognitive_sme_panels", pid, encode(p))
+    p
+}
+
+circuit configure_billing_evolution_panel() -> BillingEvolutionPanel
+    profile poly_framework_standard  lex polylabs/backend/cognitive  precision B
+    rbac [admin]  observe metrics: [sme_panels_configured]
+    meters [compute_cycles, storage]  wasm_abi [store_get, store_put, emit, now]
+    test golden "configure_billing_panel" {
+        let r = configure_billing_evolution_panel()
+        assert r.min_panelists == 3
+        assert r.calibration_accuracy_floor_bps >= 7000
+    }
+{
+    let pid = sha3_256(bytes(32, "polylabs/sme/billing"))
+    let p = BillingEvolutionPanel {
+        panel_id: pid, domain_scope: bytes(64, "platform/billing_patterns"), min_panelists: 3,
+        specializations: [bytes(32, "churn_prediction"), bytes(32, "pricing_optimization"),
+            bytes(32, "tier_migration"), bytes(32, "payment_processing")],
+        calibration_accuracy_floor_bps: 8000, review_timeout_ms: 172800000,
+    }
+    store_put("cognitive_sme_panels", pid, encode(p))
+    p
+}
+
+// ── Integration Test ────────────────────────────────────────────────────────────
+
+test golden "full_ce_pipeline_setup" {
+    exec {
+        let gw = register_gateway_health_domain()
+        let bp = register_billing_patterns_domain()
+        let tl = register_tenant_lifecycle_domain()
+        let nf = configure_platform_noise_filter()
+        let gp = configure_gateway_optimization_panel()
+        let be = configure_billing_evolution_panel()
+    }
+    assert {
+        len(gw.domain_id) == 32; len(bp.domain_id) == 32; len(tl.domain_id) == 32
+        nf.suppress_health_checks == true
+        gp.min_panelists == 3; be.min_panelists == 3
+    }
+}

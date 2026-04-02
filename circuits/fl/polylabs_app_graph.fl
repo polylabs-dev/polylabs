@@ -1,0 +1,330 @@
+/// Spec: specs/POLYLABS_CE_APP_GRAPH_SPEC.md
+/// PolyLabs Backend App Graph — 12 ModuleNode declarations for the
+/// Poly Labs central backend, intra-graph dependency edges and
+/// cross-graph bridges to PolyKit and eStream primitives.
+///
+/// Modules: gateway (3), billing (4), admin (3), graphs (2)
+///
+/// Epic: polylabs#TBD (CE + App Graph Integration)
+/// govern lex polylabs/backend
+
+lex polylabs/backend
+
+@target software
+@codegen_targets ["wasm", "rust"]
+
+import "core/deployment/module_stratum.fl" {
+    ModuleNode, ModuleEdge, SemVer, CompilationReceipt, ResourceBudget8D,
+    CsrStorage, ModuleType, AperturePartition, ModuleState, RolloutState,
+    PersistencePolicy, OfflineCachePolicy, EntitlementTier, EnforcementMode,
+    SLATier, EDGE_REQUIRES, EDGE_BRIDGE_TO,
+    module_graph_add_module, module_graph_add_edge,
+    graph_add_node, graph_add_edge,
+}
+
+import "core/deployment/cross_graph_edges.fl" {
+    EDGE_GOVERNANCE_OBSERVE, GovernanceObserveEdge,
+    module_graph_add_governance_observe_edge,
+}
+
+// ── Constants ──────────────────────────────────────────────────────────────────
+
+const POLYLABS_VERSION_MAJOR: u32 = 0
+const POLYLABS_VERSION_MINOR: u32 = 1
+const POLYLABS_VERSION_PATCH: u32 = 0
+const POLYLABS_APP_LEX: string = "polylabs/backend"
+const POLYLABS_MODULE_COUNT: u32 = 12
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Internal helper — common ModuleNode construction
+// ═══════════════════════════════════════════════════════════════════════════════
+
+circuit make_polylabs_module(
+    name: string, partition: u8, sla: u8, budget: ResourceBudget8D
+) -> ModuleNode
+    lex polylabs/backend  @status production  @precision D
+{
+    let ver = SemVer { major: POLYLABS_VERSION_MAJOR, minor: POLYLABS_VERSION_MINOR,
+        patch: POLYLABS_VERSION_PATCH, pre_release: "" }
+    let receipt = CompilationReceipt {
+        source_hash: bytes(32, 0), compiler_version: ver,
+        output_hash: bytes(32, 0), prime_device_id: Option::None,
+        compilation_timestamp: 0, reproducible_verified: false,
+        receipt_signature: bytes(4627, 0),
+    }
+    ModuleNode {
+        name: name,
+        version_major: POLYLABS_VERSION_MAJOR, version_minor: POLYLABS_VERSION_MINOR,
+        version_patch: POLYLABS_VERSION_PATCH, version_pre: "",
+        module_type: ModuleType::SmartCircuit as u8,
+        content_hash: bytes(32, 0), signature_chain: bytes(0),
+        aperture_partition: partition, role_set: ["Admin", "Operator"],
+        required_entitlement: EntitlementTier::Pro as u8,
+        classification_domains: [], max_classification_level: 0,
+        compilation_receipt: receipt, source_hash: bytes(32, 0),
+        compiler_version_major: POLYLABS_VERSION_MAJOR,
+        compiler_version_minor: POLYLABS_VERSION_MINOR,
+        prime_device_id: bytes(0), reproducible_verified: false,
+        resource_budget: budget,
+        budget_enforcement_mode: EnforcementMode::Hard as u8,
+        state: ModuleState::Active as u8,
+        rollout_state: RolloutState::Canary as u8, canary_target: Option::None,
+        persistence: PersistencePolicy::Persistent as u8,
+        offline_cache_policy: OfflineCachePolicy::CacheAndVerify as u8,
+        max_staleness_seconds: 3600, sla_tier: sla, preferred_locality: "",
+        created_at_ms: 0, updated_at_ms: 0,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §1  Module Definitions — gateway (3), billing (4), admin (3), graphs (2)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+circuit gateway_router_module() -> ModuleNode
+    lex polylabs/backend  @status production  @precision D
+    observe metrics: [module_name]  meters [compute_cycles]
+{ make_polylabs_module("gateway_router", AperturePartition::Head as u8, SLATier::Premium as u8,
+    ResourceBudget8D { execution: 8000, hash_ops: 200, bandwidth: 5000, storage: 500, observe_events: 300, proofs: 10, consensus: 5, memory: 8192 }) }
+
+circuit gateway_auth_module() -> ModuleNode
+    lex polylabs/backend  @status production  @precision D
+    observe metrics: [module_name]  meters [compute_cycles]
+{ make_polylabs_module("gateway_auth", AperturePartition::Head as u8, SLATier::Premium as u8,
+    ResourceBudget8D { execution: 6000, hash_ops: 500, bandwidth: 2000, storage: 300, observe_events: 200, proofs: 20, consensus: 5, memory: 4096 }) }
+
+circuit gateway_rate_limit_module() -> ModuleNode
+    lex polylabs/backend  @status production  @precision D
+    observe metrics: [module_name]  meters [compute_cycles]
+{ make_polylabs_module("gateway_rate_limit", AperturePartition::Head as u8, SLATier::Premium as u8,
+    ResourceBudget8D { execution: 4000, hash_ops: 100, bandwidth: 2000, storage: 200, observe_events: 500, proofs: 5, consensus: 2, memory: 4096 }) }
+
+circuit billing_subscription_module() -> ModuleNode
+    lex polylabs/backend  @status production  @precision D
+    observe metrics: [module_name]  meters [compute_cycles]
+{ make_polylabs_module("billing_subscription", AperturePartition::Backend as u8, SLATier::Standard as u8,
+    ResourceBudget8D { execution: 5000, hash_ops: 200, bandwidth: 1000, storage: 2000, observe_events: 200, proofs: 10, consensus: 5, memory: 4096 }) }
+
+circuit billing_metering_module() -> ModuleNode
+    lex polylabs/backend  @status production  @precision D
+    observe metrics: [module_name]  meters [compute_cycles]
+{ make_polylabs_module("billing_metering", AperturePartition::Backend as u8, SLATier::Standard as u8,
+    ResourceBudget8D { execution: 6000, hash_ops: 300, bandwidth: 2000, storage: 3000, observe_events: 300, proofs: 10, consensus: 5, memory: 8192 }) }
+
+circuit billing_blinded_module() -> ModuleNode
+    lex polylabs/backend  @status production  @precision D
+    observe metrics: [module_name]  meters [compute_cycles]
+{ make_polylabs_module("billing_blinded", AperturePartition::Backend as u8, SLATier::Premium as u8,
+    ResourceBudget8D { execution: 5000, hash_ops: 400, bandwidth: 1000, storage: 500, observe_events: 200, proofs: 20, consensus: 5, memory: 4096 }) }
+
+circuit billing_settlement_module() -> ModuleNode
+    lex polylabs/backend  @status production  @precision D
+    observe metrics: [module_name]  meters [compute_cycles]
+{ make_polylabs_module("billing_settlement", AperturePartition::Backend as u8, SLATier::Premium as u8,
+    ResourceBudget8D { execution: 8000, hash_ops: 500, bandwidth: 3000, storage: 2000, observe_events: 300, proofs: 20, consensus: 10, memory: 8192 }) }
+
+circuit admin_rbac_module() -> ModuleNode
+    lex polylabs/backend  @status production  @precision D
+    observe metrics: [module_name]  meters [compute_cycles]
+{ make_polylabs_module("admin_rbac", AperturePartition::Backend as u8, SLATier::Standard as u8,
+    ResourceBudget8D { execution: 4000, hash_ops: 200, bandwidth: 1000, storage: 2000, observe_events: 200, proofs: 10, consensus: 5, memory: 4096 }) }
+
+circuit admin_audit_module() -> ModuleNode
+    lex polylabs/backend  @status production  @precision D
+    observe metrics: [module_name]  meters [compute_cycles]
+{ make_polylabs_module("admin_audit", AperturePartition::Backend as u8, SLATier::Standard as u8,
+    ResourceBudget8D { execution: 3000, hash_ops: 300, bandwidth: 1000, storage: 5000, observe_events: 500, proofs: 20, consensus: 5, memory: 4096 }) }
+
+circuit admin_provisioning_module() -> ModuleNode
+    lex polylabs/backend  @status production  @precision D
+    observe metrics: [module_name]  meters [compute_cycles]
+{ make_polylabs_module("admin_provisioning", AperturePartition::Backend as u8, SLATier::Standard as u8,
+    ResourceBudget8D { execution: 5000, hash_ops: 200, bandwidth: 2000, storage: 1000, observe_events: 200, proofs: 10, consensus: 10, memory: 4096 }) }
+
+circuit tenant_graph_module() -> ModuleNode
+    lex polylabs/backend  @status production  @precision D
+    observe metrics: [module_name]  meters [compute_cycles]
+{ make_polylabs_module("tenant_graph", AperturePartition::Backend as u8, SLATier::Standard as u8,
+    ResourceBudget8D { execution: 6000, hash_ops: 300, bandwidth: 2000, storage: 5000, observe_events: 300, proofs: 10, consensus: 5, memory: 8192 }) }
+
+circuit billing_dag_module() -> ModuleNode
+    lex polylabs/backend  @status production  @precision D
+    observe metrics: [module_name]  meters [compute_cycles]
+{ make_polylabs_module("billing_dag", AperturePartition::Backend as u8, SLATier::Standard as u8,
+    ResourceBudget8D { execution: 5000, hash_ops: 400, bandwidth: 2000, storage: 5000, observe_events: 300, proofs: 15, consensus: 5, memory: 8192 }) }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §2  Graph Registration — 12 modules, 18 EDGE_REQUIRES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+circuit polylabs_app_graph_register(graph: CsrStorage) -> CsrStorage
+    lex polylabs/backend  @status production  @precision B  @attested true
+    observe metrics: [polylabs_module_count, polylabs_edge_count]  meters [compute_cycles, memory_bytes]
+{
+    let (g, r)  = module_graph_add_module(graph, gateway_router_module())
+    let (g, a)  = module_graph_add_module(g, gateway_auth_module())
+    let (g, rl) = module_graph_add_module(g, gateway_rate_limit_module())
+    let (g, bs) = module_graph_add_module(g, billing_subscription_module())
+    let (g, bm) = module_graph_add_module(g, billing_metering_module())
+    let (g, bb) = module_graph_add_module(g, billing_blinded_module())
+    let (g, bt) = module_graph_add_module(g, billing_settlement_module())
+    let (g, ar) = module_graph_add_module(g, admin_rbac_module())
+    let (g, aa) = module_graph_add_module(g, admin_audit_module())
+    let (g, ap) = module_graph_add_module(g, admin_provisioning_module())
+    let (g, tg) = module_graph_add_module(g, tenant_graph_module())
+    let (g, bd) = module_graph_add_module(g, billing_dag_module())
+
+    let v = "0.1.0"
+    let c = ">=0.1.0"
+
+    let edge = |src, tgt, s_id, t_id| module_graph_add_edge(g, ModuleEdge {
+        edge_type: EDGE_REQUIRES, source_module: src, source_version: v,
+        target_module: tgt, target_version_constraint: c, metadata: bytes(0),
+    }, s_id, t_id)
+
+    let g = edge("gateway_router",       "gateway_auth",          r,  a)
+    let g = edge("gateway_router",       "gateway_rate_limit",    r,  rl)
+    let g = edge("gateway_router",       "tenant_graph",          r,  tg)
+    let g = edge("gateway_auth",         "admin_rbac",            a,  ar)
+    let g = edge("gateway_rate_limit",   "billing_metering",      rl, bm)
+    let g = edge("billing_subscription", "tenant_graph",          bs, tg)
+    let g = edge("billing_metering",     "billing_subscription",  bm, bs)
+    let g = edge("billing_metering",     "tenant_graph",          bm, tg)
+    let g = edge("billing_blinded",      "billing_subscription",  bb, bs)
+    let g = edge("billing_settlement",   "billing_blinded",       bt, bb)
+    let g = edge("billing_settlement",   "billing_dag",           bt, bd)
+    let g = edge("billing_dag",          "billing_metering",      bd, bm)
+    let g = edge("admin_audit",          "admin_rbac",            aa, ar)
+    let g = edge("admin_audit",          "billing_settlement",    aa, bt)
+    let g = edge("admin_provisioning",   "tenant_graph",          ap, tg)
+    let g = edge("admin_provisioning",   "admin_rbac",            ap, ar)
+    let g = edge("admin_provisioning",   "admin_audit",           ap, aa)
+    let g = edge("tenant_graph",         "billing_subscription",  tg, bs)
+    g
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §3  Cross-Graph Edges
+// ═══════════════════════════════════════════════════════════════════════════════
+
+data BridgeEdgeData : polylabs/backend/bridge v1 {
+    source_lex: string, source_module: string,
+    target_lex: string, target_module: string,
+    bridge_type: string, timestamp_ms: u64,
+}
+
+circuit polylabs_register_bridge_edges(graph: CsrStorage) -> CsrStorage
+    lex polylabs/backend  @status production  @precision B  @attested true
+    observe metrics: [bridge_edge_count]  meters [compute_cycles]
+{
+    let mk = |src_mod, tgt_lex, tgt_mod, btype| serialize(BridgeEdgeData {
+        source_lex: POLYLABS_APP_LEX, source_module: src_mod,
+        target_lex: tgt_lex, target_module: tgt_mod,
+        bridge_type: btype, timestamp_ms: 0,
+    }) as bytes
+
+    let b1 = mk("billing_metering", "polykit/metering",       "polykit_metering", "metering_aggregation")
+    let b2 = mk("admin_rbac",       "polykit/rbac",            "polykit_rbac",     "role_composition")
+    let b3 = mk("gateway_auth",     "core/identity/spark",     "spark_verify",     "auth_verification")
+    let b4 = mk("billing_blinded",  "core/storage/scatter",    "scatter_cas",      "blinded_token_storage")
+
+    let id_bm = find_polylabs_module_id(graph, "billing_metering")
+    let id_ar = find_polylabs_module_id(graph, "admin_rbac")
+    let id_ga = find_polylabs_module_id(graph, "gateway_auth")
+    let id_bb = find_polylabs_module_id(graph, "billing_blinded")
+
+    let (g, n1) = graph_add_node(graph, 0xB0, b1)
+    let g = graph_add_edge(g, id_bm, n1, EDGE_BRIDGE_TO, b1)
+    let (g, n2) = graph_add_node(g, 0xB0, b2)
+    let g = graph_add_edge(g, id_ar, n2, EDGE_BRIDGE_TO, b2)
+    let (g, n3) = graph_add_node(g, 0xB0, b3)
+    let g = graph_add_edge(g, id_ga, n3, EDGE_BRIDGE_TO, b3)
+    let (g, n4) = graph_add_node(g, 0xB0, b4)
+    let g = graph_add_edge(g, id_bb, n4, EDGE_BRIDGE_TO, b4)
+    g
+}
+
+circuit polylabs_register_governance_edges(graph: CsrStorage, governance_lex: string) -> CsrStorage
+    lex polylabs/backend  @status production  @precision B  @attested true
+    observe metrics: [governance_edge_count]  meters [compute_cycles]
+{
+    let modules = [
+        "gateway_router", "gateway_auth", "gateway_rate_limit",
+        "billing_subscription", "billing_metering", "billing_blinded",
+        "billing_settlement", "admin_rbac", "admin_audit",
+        "admin_provisioning", "tenant_graph", "billing_dag",
+    ]
+    let g = graph
+    for name in modules {
+        g = module_graph_add_governance_observe_edge(g, GovernanceObserveEdge {
+            observer_lex: governance_lex, observer_module: "governance_core",
+            observed_lex: POLYLABS_APP_LEX, observed_module: name,
+            observe_scope: "full", read_only: true,
+            witness_chain_required: false, refresh_interval_ms: 60000,
+        }, find_polylabs_module_id(g, name))
+    }
+    g
+}
+
+// ── Internal helpers ────────────────────────────────────────────────────────────
+
+circuit find_polylabs_module_id(graph: CsrStorage, name: string) -> u32
+    lex polylabs/backend  @status production  @precision D
+{
+    for i in 0..graph.num_nodes {
+        let module = deserialize(graph.node_data[i]) as ModuleNode
+        if module.name == name { return i }
+    }
+    0xFFFFFFFF
+}
+
+// ── Metrics ─────────────────────────────────────────────────────────────────────
+
+store series polylabs_app_graph_metrics lex polylabs/backend/metrics {
+    operation: string key
+    module_count: u32
+    edge_count: u32
+    bridge_edge_count: u32
+    governance_edge_count: u32
+}
+
+// ── Properties & Tests ──────────────────────────────────────────────────────────
+
+property safety "all_modules_registered" {
+    forall name in ["gateway_router", "gateway_auth", "gateway_rate_limit",
+        "billing_subscription", "billing_metering", "billing_blinded",
+        "billing_settlement", "admin_rbac", "admin_audit",
+        "admin_provisioning", "tenant_graph", "billing_dag"] :
+        find_polylabs_module_id(graph, name) != 0xFFFFFFFF
+}
+
+property liveness "graph_registration_completes" {
+    forall g in CsrStorage :
+        polylabs_app_graph_register(g).num_nodes >= POLYLABS_MODULE_COUNT
+}
+
+test golden "register_all_12_modules" {
+    setup { let graph = CsrStorage::new() }
+    assert {
+        let result = polylabs_app_graph_register(graph)
+        result.num_nodes == 12
+        find_polylabs_module_id(result, "gateway_router") != 0xFFFFFFFF
+        find_polylabs_module_id(result, "billing_dag") != 0xFFFFFFFF
+    }
+}
+
+test golden "bridge_edges_to_polykit" {
+    setup { let graph = polylabs_app_graph_register(CsrStorage::new()) }
+    assert {
+        let result = polylabs_register_bridge_edges(graph)
+        result.num_nodes > graph.num_nodes
+        result.num_edges > graph.num_edges
+    }
+}
+
+test golden "governance_edges_all_modules" {
+    setup { let graph = polylabs_app_graph_register(CsrStorage::new()) }
+    assert {
+        let result = polylabs_register_governance_edges(graph, "core/governance")
+        result.num_edges >= 12
+    }
+}
