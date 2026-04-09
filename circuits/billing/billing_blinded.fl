@@ -1,10 +1,10 @@
 // Billing Blinded — Blinded payment token verification
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/billing/blinded
+//   esn/global/org/polyqlabs/billing/blinded
 //   The backend receives blinded payment tokens that prove a valid
 //   subscription exists without revealing which SPARK identity holds it.
-//   This is the cornerstone of Poly Labs zero-linkage: the billing
+//   This is the cornerstone of PolyQ Labs zero-linkage: the billing
 //   backend can verify payment validity and tier entitlement without
 //   learning the user's identity across any product.
 //
@@ -27,7 +27,7 @@ data BlindedVerification : billing v1 {
     expires_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/billing/blinded
+    govern lex global/org/polyqlabs/billing/blinded
     cortex {
         redact [blinded_token, token_commitment, tier_proof]
         infer on_write
@@ -42,7 +42,7 @@ data BlindingKeyState : billing v1 {
     rotated_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/billing/blinded/keys
+    govern lex global/org/polyqlabs/billing/blinded/keys
     cortex {
         redact [public_params]
         infer on_write
@@ -62,7 +62,7 @@ circuit verify_blinded_payment(
     tier_proof: bytes(128),
     claimed_tier: string
 ) -> BlindedVerification
-    lex global/org/polylabs/billing/blinded
+    lex global/org/polyqlabs/billing/blinded
     @precision D
     constant_time true
     @observe metrics: [verifications_attempted, verifications_succeeded, verifications_failed, verification_latency_us]
@@ -108,7 +108,7 @@ circuit rotate_blinding_key(
     new_public_params: bytes(256),
     new_epoch: u64
 ) -> BlindingKeyState
-    lex global/org/polylabs/billing/blinded
+    lex global/org/polyqlabs/billing/blinded
     @precision D
     @observe metrics: [key_rotations]
     invariant "epoch_monotonic" {

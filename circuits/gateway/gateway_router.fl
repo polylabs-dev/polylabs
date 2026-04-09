@@ -1,7 +1,7 @@
 // Gateway Router — Wire protocol demux routing to per-product lex namespaces
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/gateway/router
+//   esn/global/org/polyqlabs/gateway/router
 //   Every inbound request is classified by product_id and routed into the
 //   product's isolated lex namespace. Unknown products are blocked at the
 //   guard layer — no request touches a product namespace without explicit
@@ -12,8 +12,8 @@
 //   request metadata, never user identity or session tokens. This enforces
 //   the zero-linkage boundary at the outermost edge.
 
-import polykit_identity
-import polykit_rate_limiter
+import qkit_identity
+import qkit_rate_limiter
 
 // ── Data ────────────────────────────────────────────────────────
 
@@ -29,7 +29,7 @@ data RouteConfig : gateway v1 {
     updated_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/gateway/router/config
+    govern lex global/org/polyqlabs/gateway/router/config
     cortex {
         redact []
         infer on_write
@@ -46,7 +46,7 @@ data RouteResult : gateway v1 {
     timestamp: u64,
 }
     store kv
-    govern lex global/org/polylabs/gateway/router/result
+    govern lex global/org/polyqlabs/gateway/router/result
     cortex {
         redact []
         infer on_write
@@ -67,7 +67,7 @@ circuit route_request(
     payload_size: u64,
     wire_version: u16
 ) -> RouteResult
-    lex global/org/polylabs/gateway/router
+    lex global/org/polyqlabs/gateway/router
     @precision C
     @observe metrics: [requests_routed, requests_blocked, routing_latency_us, unknown_product_count]
     monitor "routing_throughput" { requests_routed < 100000 per 60s }
@@ -124,7 +124,7 @@ circuit route_request(
 }
 
 circuit register_product_route(config: RouteConfig) -> bool
-    lex global/org/polylabs/gateway/router
+    lex global/org/polyqlabs/gateway/router
     @precision C
     @observe metrics: [routes_registered, route_updates]
     invariant "product_id_nonzero" { config.product_id != zero_bytes(16) }
@@ -160,8 +160,8 @@ test golden "route_known_product" {
     setup {
         eslite_insert("route_configs", hex("aa" * 16), RouteConfig {
             product_id: hex("aa" * 16),
-            product_name: "polyfiles",
-            lex_namespace: "global/org/polylabs/files",
+            product_name: "qfiles",
+            lex_namespace: "global/org/polyqlabs/files",
             wire_protocol_version: 1,
             max_payload_bytes: 67108864,
             enabled: true,
@@ -178,7 +178,7 @@ test golden "route_known_product" {
     }
     assert {
         result.routed == true
-        result.target_namespace == "global/org/polylabs/files"
+        result.target_namespace == "global/org/polyqlabs/files"
         result.reason == "ok"
     }
 }

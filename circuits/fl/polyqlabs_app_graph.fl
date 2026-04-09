@@ -1,14 +1,14 @@
 /// Spec: specs/POLYLABS_CE_APP_GRAPH_SPEC.md
 /// PolyLabs Backend App Graph — 12 ModuleNode declarations for the
-/// Poly Labs central backend, intra-graph dependency edges and
-/// cross-graph bridges to PolyKit and eStream primitives.
+/// PolyQ Labs central backend, intra-graph dependency edges and
+/// cross-graph bridges to QKit and eStream primitives.
 ///
 /// Modules: gateway (3), billing (4), admin (3), graphs (2)
 ///
-/// Epic: polylabs#TBD (CE + App Graph Integration)
-/// govern lex polylabs/backend
+/// Epic: polyqlabs#TBD (CE + App Graph Integration)
+/// govern lex polyqlabs/backend
 
-lex polylabs/backend
+lex polyqlabs/backend
 
 @target software
 @codegen_targets ["wasm", "rust"]
@@ -32,17 +32,17 @@ import "core/deployment/cross_graph_edges.fl" {
 const POLYLABS_VERSION_MAJOR: u32 = 0
 const POLYLABS_VERSION_MINOR: u32 = 1
 const POLYLABS_VERSION_PATCH: u32 = 0
-const POLYLABS_APP_LEX: string = "polylabs/backend"
+const POLYLABS_APP_LEX: string = "polyqlabs/backend"
 const POLYLABS_MODULE_COUNT: u32 = 12
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Internal helper — common ModuleNode construction
 // ═══════════════════════════════════════════════════════════════════════════════
 
-circuit make_polylabs_module(
+circuit make_polyqlabs_module(
     name: string, partition: u8, sla: u8, budget: ResourceBudget8D
 ) -> ModuleNode
-    lex polylabs/backend  @status production  @precision D
+    lex polyqlabs/backend  @status production  @precision D
 {
     let ver = SemVer { major: POLYLABS_VERSION_MAJOR, minor: POLYLABS_VERSION_MINOR,
         patch: POLYLABS_VERSION_PATCH, pre_release: "" }
@@ -81,84 +81,84 @@ circuit make_polylabs_module(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 circuit gateway_router_module() -> ModuleNode
-    lex polylabs/backend  @status production  @precision D
+    lex polyqlabs/backend  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
-{ make_polylabs_module("gateway_router", AperturePartition::Head as u8, SLATier::Premium as u8,
+{ make_polyqlabs_module("gateway_router", AperturePartition::Head as u8, SLATier::Premium as u8,
     ResourceBudget8D { execution: 8000, hash_ops: 200, bandwidth: 5000, storage: 500, observe_events: 300, proofs: 10, consensus: 5, memory: 8192 }) }
 
 circuit gateway_auth_module() -> ModuleNode
-    lex polylabs/backend  @status production  @precision D
+    lex polyqlabs/backend  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
-{ make_polylabs_module("gateway_auth", AperturePartition::Head as u8, SLATier::Premium as u8,
+{ make_polyqlabs_module("gateway_auth", AperturePartition::Head as u8, SLATier::Premium as u8,
     ResourceBudget8D { execution: 6000, hash_ops: 500, bandwidth: 2000, storage: 300, observe_events: 200, proofs: 20, consensus: 5, memory: 4096 }) }
 
 circuit gateway_rate_limit_module() -> ModuleNode
-    lex polylabs/backend  @status production  @precision D
+    lex polyqlabs/backend  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
-{ make_polylabs_module("gateway_rate_limit", AperturePartition::Head as u8, SLATier::Premium as u8,
+{ make_polyqlabs_module("gateway_rate_limit", AperturePartition::Head as u8, SLATier::Premium as u8,
     ResourceBudget8D { execution: 4000, hash_ops: 100, bandwidth: 2000, storage: 200, observe_events: 500, proofs: 5, consensus: 2, memory: 4096 }) }
 
 circuit billing_subscription_module() -> ModuleNode
-    lex polylabs/backend  @status production  @precision D
+    lex polyqlabs/backend  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
-{ make_polylabs_module("billing_subscription", AperturePartition::Backend as u8, SLATier::Standard as u8,
+{ make_polyqlabs_module("billing_subscription", AperturePartition::Backend as u8, SLATier::Standard as u8,
     ResourceBudget8D { execution: 5000, hash_ops: 200, bandwidth: 1000, storage: 2000, observe_events: 200, proofs: 10, consensus: 5, memory: 4096 }) }
 
 circuit billing_metering_module() -> ModuleNode
-    lex polylabs/backend  @status production  @precision D
+    lex polyqlabs/backend  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
-{ make_polylabs_module("billing_metering", AperturePartition::Backend as u8, SLATier::Standard as u8,
+{ make_polyqlabs_module("billing_metering", AperturePartition::Backend as u8, SLATier::Standard as u8,
     ResourceBudget8D { execution: 6000, hash_ops: 300, bandwidth: 2000, storage: 3000, observe_events: 300, proofs: 10, consensus: 5, memory: 8192 }) }
 
 circuit billing_blinded_module() -> ModuleNode
-    lex polylabs/backend  @status production  @precision D
+    lex polyqlabs/backend  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
-{ make_polylabs_module("billing_blinded", AperturePartition::Backend as u8, SLATier::Premium as u8,
+{ make_polyqlabs_module("billing_blinded", AperturePartition::Backend as u8, SLATier::Premium as u8,
     ResourceBudget8D { execution: 5000, hash_ops: 400, bandwidth: 1000, storage: 500, observe_events: 200, proofs: 20, consensus: 5, memory: 4096 }) }
 
 circuit billing_settlement_module() -> ModuleNode
-    lex polylabs/backend  @status production  @precision D
+    lex polyqlabs/backend  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
-{ make_polylabs_module("billing_settlement", AperturePartition::Backend as u8, SLATier::Premium as u8,
+{ make_polyqlabs_module("billing_settlement", AperturePartition::Backend as u8, SLATier::Premium as u8,
     ResourceBudget8D { execution: 8000, hash_ops: 500, bandwidth: 3000, storage: 2000, observe_events: 300, proofs: 20, consensus: 10, memory: 8192 }) }
 
 circuit admin_rbac_module() -> ModuleNode
-    lex polylabs/backend  @status production  @precision D
+    lex polyqlabs/backend  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
-{ make_polylabs_module("admin_rbac", AperturePartition::Backend as u8, SLATier::Standard as u8,
+{ make_polyqlabs_module("admin_rbac", AperturePartition::Backend as u8, SLATier::Standard as u8,
     ResourceBudget8D { execution: 4000, hash_ops: 200, bandwidth: 1000, storage: 2000, observe_events: 200, proofs: 10, consensus: 5, memory: 4096 }) }
 
 circuit admin_audit_module() -> ModuleNode
-    lex polylabs/backend  @status production  @precision D
+    lex polyqlabs/backend  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
-{ make_polylabs_module("admin_audit", AperturePartition::Backend as u8, SLATier::Standard as u8,
+{ make_polyqlabs_module("admin_audit", AperturePartition::Backend as u8, SLATier::Standard as u8,
     ResourceBudget8D { execution: 3000, hash_ops: 300, bandwidth: 1000, storage: 5000, observe_events: 500, proofs: 20, consensus: 5, memory: 4096 }) }
 
 circuit admin_provisioning_module() -> ModuleNode
-    lex polylabs/backend  @status production  @precision D
+    lex polyqlabs/backend  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
-{ make_polylabs_module("admin_provisioning", AperturePartition::Backend as u8, SLATier::Standard as u8,
+{ make_polyqlabs_module("admin_provisioning", AperturePartition::Backend as u8, SLATier::Standard as u8,
     ResourceBudget8D { execution: 5000, hash_ops: 200, bandwidth: 2000, storage: 1000, observe_events: 200, proofs: 10, consensus: 10, memory: 4096 }) }
 
 circuit tenant_graph_module() -> ModuleNode
-    lex polylabs/backend  @status production  @precision D
+    lex polyqlabs/backend  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
-{ make_polylabs_module("tenant_graph", AperturePartition::Backend as u8, SLATier::Standard as u8,
+{ make_polyqlabs_module("tenant_graph", AperturePartition::Backend as u8, SLATier::Standard as u8,
     ResourceBudget8D { execution: 6000, hash_ops: 300, bandwidth: 2000, storage: 5000, observe_events: 300, proofs: 10, consensus: 5, memory: 8192 }) }
 
 circuit billing_dag_module() -> ModuleNode
-    lex polylabs/backend  @status production  @precision D
+    lex polyqlabs/backend  @status production  @precision D
     observe metrics: [module_name]  meters [compute_cycles]
-{ make_polylabs_module("billing_dag", AperturePartition::Backend as u8, SLATier::Standard as u8,
+{ make_polyqlabs_module("billing_dag", AperturePartition::Backend as u8, SLATier::Standard as u8,
     ResourceBudget8D { execution: 5000, hash_ops: 400, bandwidth: 2000, storage: 5000, observe_events: 300, proofs: 15, consensus: 5, memory: 8192 }) }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // §2  Graph Registration — 12 modules, 18 EDGE_REQUIRES
 // ═══════════════════════════════════════════════════════════════════════════════
 
-circuit polylabs_app_graph_register(graph: CsrStorage) -> CsrStorage
-    lex polylabs/backend  @status production  @precision B  @attested true
-    observe metrics: [polylabs_module_count, polylabs_edge_count]  meters [compute_cycles, memory_bytes]
+circuit polyqlabs_app_graph_register(graph: CsrStorage) -> CsrStorage
+    lex polyqlabs/backend  @status production  @precision B  @attested true
+    observe metrics: [polyqlabs_module_count, polyqlabs_edge_count]  meters [compute_cycles, memory_bytes]
 {
     let (g, r)  = module_graph_add_module(graph, gateway_router_module())
     let (g, a)  = module_graph_add_module(g, gateway_auth_module())
@@ -206,14 +206,14 @@ circuit polylabs_app_graph_register(graph: CsrStorage) -> CsrStorage
 // §3  Cross-Graph Edges
 // ═══════════════════════════════════════════════════════════════════════════════
 
-data BridgeEdgeData : polylabs/backend/bridge v1 {
+data BridgeEdgeData : polyqlabs/backend/bridge v1 {
     source_lex: string, source_module: string,
     target_lex: string, target_module: string,
     bridge_type: string, timestamp_ms: u64,
 }
 
-circuit polylabs_register_bridge_edges(graph: CsrStorage) -> CsrStorage
-    lex polylabs/backend  @status production  @precision B  @attested true
+circuit polyqlabs_register_bridge_edges(graph: CsrStorage) -> CsrStorage
+    lex polyqlabs/backend  @status production  @precision B  @attested true
     observe metrics: [bridge_edge_count]  meters [compute_cycles]
 {
     let mk = |src_mod, tgt_lex, tgt_mod, btype| serialize(BridgeEdgeData {
@@ -222,15 +222,15 @@ circuit polylabs_register_bridge_edges(graph: CsrStorage) -> CsrStorage
         bridge_type: btype, timestamp_ms: 0,
     }) as bytes
 
-    let b1 = mk("billing_metering", "polykit/metering",       "polykit_metering", "metering_aggregation")
-    let b2 = mk("admin_rbac",       "polykit/rbac",            "polykit_rbac",     "role_composition")
+    let b1 = mk("billing_metering", "qkit/metering",       "qkit_metering", "metering_aggregation")
+    let b2 = mk("admin_rbac",       "qkit/rbac",            "qkit_rbac",     "role_composition")
     let b3 = mk("gateway_auth",     "core/identity/spark",     "spark_verify",     "auth_verification")
     let b4 = mk("billing_blinded",  "core/storage/scatter",    "scatter_cas",      "blinded_token_storage")
 
-    let id_bm = find_polylabs_module_id(graph, "billing_metering")
-    let id_ar = find_polylabs_module_id(graph, "admin_rbac")
-    let id_ga = find_polylabs_module_id(graph, "gateway_auth")
-    let id_bb = find_polylabs_module_id(graph, "billing_blinded")
+    let id_bm = find_polyqlabs_module_id(graph, "billing_metering")
+    let id_ar = find_polyqlabs_module_id(graph, "admin_rbac")
+    let id_ga = find_polyqlabs_module_id(graph, "gateway_auth")
+    let id_bb = find_polyqlabs_module_id(graph, "billing_blinded")
 
     let (g, n1) = graph_add_node(graph, 0xB0, b1)
     let g = graph_add_edge(g, id_bm, n1, EDGE_BRIDGE_TO, b1)
@@ -243,8 +243,8 @@ circuit polylabs_register_bridge_edges(graph: CsrStorage) -> CsrStorage
     g
 }
 
-circuit polylabs_register_governance_edges(graph: CsrStorage, governance_lex: string) -> CsrStorage
-    lex polylabs/backend  @status production  @precision B  @attested true
+circuit polyqlabs_register_governance_edges(graph: CsrStorage, governance_lex: string) -> CsrStorage
+    lex polyqlabs/backend  @status production  @precision B  @attested true
     observe metrics: [governance_edge_count]  meters [compute_cycles]
 {
     let modules = [
@@ -260,15 +260,15 @@ circuit polylabs_register_governance_edges(graph: CsrStorage, governance_lex: st
             observed_lex: POLYLABS_APP_LEX, observed_module: name,
             observe_scope: "full", read_only: true,
             witness_chain_required: false, refresh_interval_ms: 60000,
-        }, find_polylabs_module_id(g, name))
+        }, find_polyqlabs_module_id(g, name))
     }
     g
 }
 
 // ── Internal helpers ────────────────────────────────────────────────────────────
 
-circuit find_polylabs_module_id(graph: CsrStorage, name: string) -> u32
-    lex polylabs/backend  @status production  @precision D
+circuit find_polyqlabs_module_id(graph: CsrStorage, name: string) -> u32
+    lex polyqlabs/backend  @status production  @precision D
 {
     for i in 0..graph.num_nodes {
         let module = deserialize(graph.node_data[i]) as ModuleNode
@@ -279,7 +279,7 @@ circuit find_polylabs_module_id(graph: CsrStorage, name: string) -> u32
 
 // ── Metrics ─────────────────────────────────────────────────────────────────────
 
-store series polylabs_app_graph_metrics lex polylabs/backend/metrics {
+store series polyqlabs_app_graph_metrics lex polyqlabs/backend/metrics {
     operation: string key
     module_count: u32
     edge_count: u32
@@ -294,37 +294,37 @@ property safety "all_modules_registered" {
         "billing_subscription", "billing_metering", "billing_blinded",
         "billing_settlement", "admin_rbac", "admin_audit",
         "admin_provisioning", "tenant_graph", "billing_dag"] :
-        find_polylabs_module_id(graph, name) != 0xFFFFFFFF
+        find_polyqlabs_module_id(graph, name) != 0xFFFFFFFF
 }
 
 property liveness "graph_registration_completes" {
     forall g in CsrStorage :
-        polylabs_app_graph_register(g).num_nodes >= POLYLABS_MODULE_COUNT
+        polyqlabs_app_graph_register(g).num_nodes >= POLYLABS_MODULE_COUNT
 }
 
 test golden "register_all_12_modules" {
     setup { let graph = CsrStorage::new() }
     assert {
-        let result = polylabs_app_graph_register(graph)
+        let result = polyqlabs_app_graph_register(graph)
         result.num_nodes == 12
-        find_polylabs_module_id(result, "gateway_router") != 0xFFFFFFFF
-        find_polylabs_module_id(result, "billing_dag") != 0xFFFFFFFF
+        find_polyqlabs_module_id(result, "gateway_router") != 0xFFFFFFFF
+        find_polyqlabs_module_id(result, "billing_dag") != 0xFFFFFFFF
     }
 }
 
-test golden "bridge_edges_to_polykit" {
-    setup { let graph = polylabs_app_graph_register(CsrStorage::new()) }
+test golden "bridge_edges_to_qkit" {
+    setup { let graph = polyqlabs_app_graph_register(CsrStorage::new()) }
     assert {
-        let result = polylabs_register_bridge_edges(graph)
+        let result = polyqlabs_register_bridge_edges(graph)
         result.num_nodes > graph.num_nodes
         result.num_edges > graph.num_edges
     }
 }
 
 test golden "governance_edges_all_modules" {
-    setup { let graph = polylabs_app_graph_register(CsrStorage::new()) }
+    setup { let graph = polyqlabs_app_graph_register(CsrStorage::new()) }
     assert {
-        let result = polylabs_register_governance_edges(graph, "core/governance")
+        let result = polyqlabs_register_governance_edges(graph, "core/governance")
         result.num_edges >= 12
     }
 }

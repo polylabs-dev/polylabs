@@ -1,7 +1,7 @@
 // Admin Audit — Audit trail with PoVC attestation and ML-DSA-87 signing
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/admin/audit
+//   esn/global/org/polyqlabs/admin/audit
 //   Every administrative action is recorded as a signed, attested audit
 //   entry. Entries are append-only, ML-DSA-87 signed, and PoVC-attested
 //   for tamper evidence. The audit stream is consumed by compliance,
@@ -27,7 +27,7 @@ data AuditEntry : admin v1 {
     timestamp: u64,
 }
     store kv
-    govern lex global/org/polylabs/admin/audit
+    govern lex global/org/polyqlabs/admin/audit
     cortex {
         redact [actor_id]
         infer on_write
@@ -41,7 +41,7 @@ data AuditChainHead : admin v1 {
     last_verified_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/admin/audit/chain
+    govern lex global/org/polyqlabs/admin/audit/chain
     cortex {
         redact []
         infer on_write
@@ -65,7 +65,7 @@ circuit record_audit(
     details: string,
     signing_sk: bytes(4896)
 ) -> AuditEntry
-    lex global/org/polylabs/admin/audit
+    lex global/org/polyqlabs/admin/audit
     @precision D
     @observe metrics: [audit_entries_recorded, audit_chain_length, audit_actions_by_type]
     monitor "audit_volume" { audit_entries_recorded < 100000 per 3600s }
@@ -115,7 +115,7 @@ circuit record_audit(
 }
 
 circuit verify_audit_chain(depth: u64) -> bool
-    lex global/org/polylabs/admin/audit
+    lex global/org/polyqlabs/admin/audit
     @precision C
     @observe metrics: [chain_verifications, chain_integrity_failures]
     invariant "depth_positive" { depth > 0 }
@@ -147,7 +147,7 @@ circuit query_audit_by_actor(
     since: u64,
     limit: u32
 ) -> list<AuditEntry>
-    lex global/org/polylabs/admin/audit
+    lex global/org/polyqlabs/admin/audit
     @precision B
     @observe metrics: [audit_queries, audit_results_returned]
     invariant "actor_nonzero" { actor_id != zero_bytes(32) }

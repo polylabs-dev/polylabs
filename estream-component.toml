@@ -1,8 +1,8 @@
 [component]
-name = "polylabs-backend"
+name = "polyqlabs-backend"
 version = "0.1.0"
 kind = "service"
-description = "Poly Labs central backend circuits — gateway routing, billing, admin RBAC, tenant provisioning"
+description = "PolyQ Labs central backend circuits — gateway routing, billing, admin RBAC, tenant provisioning"
 
 [component.provides]
 circuits = [
@@ -22,14 +22,14 @@ circuits = [
 
 [component.requires]
 platform = "0.12.0"
-polykit = "0.4.0"
+qkit = "0.4.0"
 
 [component.lex]
 namespaces = [
-    "esn/global/org/polylabs/gateway",
-    "esn/global/org/polylabs/billing",
-    "esn/global/org/polylabs/admin",
-    "esn/global/org/polylabs/tenant",
+    "esn/global/org/polyqlabs/gateway",
+    "esn/global/org/polyqlabs/billing",
+    "esn/global/org/polyqlabs/admin",
+    "esn/global/org/polyqlabs/tenant",
 ]
 
 [component.signing]

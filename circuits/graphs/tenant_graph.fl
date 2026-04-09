@@ -1,7 +1,7 @@
 // Tenant Graph — Customer, Subscription, Product relationship registry
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/tenant
+//   esn/global/org/polyqlabs/tenant
 //   The tenant registry models the three core entities of the platform:
 //   Customers (blinded identities), Subscriptions (tier + billing state),
 //   and Products (provisioned services). Edges capture which customer holds
@@ -27,7 +27,7 @@ data Customer : tenant v1 {
     product_count: u16,
 }
     store graph
-    govern lex global/org/polylabs/tenant/customer
+    govern lex global/org/polyqlabs/tenant/customer
     cortex {
         redact [blinded_token]
         infer on_write
@@ -43,7 +43,7 @@ data Subscription : tenant v1 {
     auto_renew: bool,
 }
     store graph
-    govern lex global/org/polylabs/tenant/subscription
+    govern lex global/org/polyqlabs/tenant/subscription
     cortex {
         redact []
         infer on_write
@@ -58,7 +58,7 @@ data Product : tenant v1 {
     launched_at: u64,
 }
     store graph
-    govern lex global/org/polylabs/tenant/product
+    govern lex global/org/polyqlabs/tenant/product
     cortex {
         redact []
         infer on_write
@@ -115,7 +115,7 @@ stream tenant_events : event<Customer>
 circuit register_customer(
     blinded_token: bytes(64)
 ) -> Customer
-    lex global/org/polylabs/tenant
+    lex global/org/polyqlabs/tenant
     @precision C
     @observe metrics: [customers_registered, total_customers]
     invariant "token_nonzero" { blinded_token != zero_bytes(64) }
@@ -143,7 +143,7 @@ circuit link_subscription(
     subscription_id: bytes(32),
     product_id: bytes(16)
 ) -> bool
-    lex global/org/polylabs/tenant
+    lex global/org/polyqlabs/tenant
     @precision C
     @observe metrics: [subscriptions_linked, product_links_created]
     invariant "customer_exists" { eslite_exists("customers", customer_id) }
@@ -162,7 +162,7 @@ circuit link_subscription(
 }
 
 circuit query_customer_products(customer_id: bytes(32)) -> list<Product>
-    lex global/org/polylabs/tenant
+    lex global/org/polyqlabs/tenant
     @precision B
     @observe metrics: [customer_product_queries]
     invariant "customer_exists" { eslite_exists("customers", customer_id) }
@@ -225,8 +225,8 @@ test golden "link_subscription_to_customer" {
         })
         eslite_insert("products", hex("dd" * 16), Product {
             product_id: hex("dd" * 16),
-            product_name: "polyfiles",
-            lex_namespace: "global/org/polylabs/files",
+            product_name: "qfiles",
+            lex_namespace: "global/org/polyqlabs/files",
             provisioned: true,
             launched_at: 500,
         })

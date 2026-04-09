@@ -1,7 +1,7 @@
 // Admin Provisioning — Product provisioning, lex namespace creation, distribute node allocation
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/admin/provisioning
+//   esn/global/org/polyqlabs/admin/provisioning
 //   When a new product is onboarded or a tenant subscribes to a product,
 //   provisioning creates the isolated lex namespace, allocates distribute
 //   nodes for the product's data tier, and registers the product in the
@@ -28,7 +28,7 @@ data ProvisioningRequest : admin v1 {
     status: string,
 }
     store kv
-    govern lex global/org/polylabs/admin/provisioning/request
+    govern lex global/org/polyqlabs/admin/provisioning/request
     cortex {
         redact [requested_by]
         infer on_write
@@ -48,7 +48,7 @@ data ProvisionedProduct : admin v1 {
     provisioned_by: bytes(32),
 }
     store kv
-    govern lex global/org/polylabs/admin/provisioning/product
+    govern lex global/org/polyqlabs/admin/provisioning/product
     cortex {
         redact [provisioned_by]
         infer on_write
@@ -65,7 +65,7 @@ data ScatterAllocation : admin v1 {
     active: bool,
 }
     store kv
-    govern lex global/org/polylabs/admin/provisioning/distribute
+    govern lex global/org/polyqlabs/admin/provisioning/distribute
     cortex {
         redact []
         infer on_write
@@ -89,7 +89,7 @@ circuit provision_product(
     hkdf_context: string,
     tier: string
 ) -> ProvisionedProduct
-    lex global/org/polylabs/admin/provisioning
+    lex global/org/polyqlabs/admin/provisioning
     @precision D
     @observe metrics: [products_provisioned, scatter_nodes_allocated, provisioning_latency_ms, provisioning_failures]
     monitor "provisioning_rate" { products_provisioned < 50 per 3600s }
@@ -167,7 +167,7 @@ circuit deprovision_product(
     product_id: bytes(16),
     requested_by: bytes(32)
 ) -> bool
-    lex global/org/polylabs/admin/provisioning
+    lex global/org/polyqlabs/admin/provisioning
     @precision D
     @observe metrics: [products_deprovisioned, scatter_nodes_released]
     invariant "product_exists" { eslite_exists("provisioned_products", product_id) }
@@ -189,7 +189,7 @@ circuit deprovision_product(
 }
 
 circuit list_provisioned_products() -> list<ProvisionedProduct>
-    lex global/org/polylabs/admin/provisioning
+    lex global/org/polyqlabs/admin/provisioning
     @precision B
     @observe metrics: [provisioning_queries]
     invariant "always_true" { true }
@@ -224,20 +224,20 @@ test golden "provision_new_product" {
     input {
         request_id: hex("aa" * 32)
         product_id: hex("bb" * 16)
-        product_name: "polyfiles"
+        product_name: "qfiles"
         requested_by: hex("cc" * 32)
-        lex_namespace: "global/org/polylabs/files"
+        lex_namespace: "global/org/polyqlabs/files"
         scatter_node_count: 5
-        hkdf_context: "poly-files-v1"
+        hkdf_context: "q-files-v1"
         tier: "Premium"
     }
     assert {
-        result.product_name == "polyfiles"
+        result.product_name == "qfiles"
         result.lex_root_created == true
         result.gateway_route_registered == true
         len(result.scatter_node_ids) == 5
         result.scatter_allocation_bytes == 53687091200
-        result.hkdf_context == "poly-files-v1"
+        result.hkdf_context == "q-files-v1"
     }
 }
 
@@ -245,15 +245,15 @@ test golden "provision_free_tier" {
     input {
         request_id: hex("dd" * 32)
         product_id: hex("ee" * 16)
-        product_name: "polymessenger"
+        product_name: "qmessenger"
         requested_by: hex("ff" * 32)
-        lex_namespace: "global/org/polylabs/messenger"
+        lex_namespace: "global/org/polyqlabs/messenger"
         scatter_node_count: 3
-        hkdf_context: "poly-messenger-v1"
+        hkdf_context: "q-messenger-v1"
         tier: "Free"
     }
     assert {
-        result.product_name == "polymessenger"
+        result.product_name == "qmessenger"
         len(result.scatter_node_ids) == 3
         result.scatter_allocation_bytes == 3221225472
     }

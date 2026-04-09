@@ -1,7 +1,7 @@
 // Billing DAG — Invoice, Payment, Credit history with merkle chain
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/billing/history
+//   esn/global/org/polyqlabs/billing/history
 //   The billing DAG is an append-only directed acyclic graph tracking
 //   every financial event: invoices issued, payments received, and credits
 //   applied. Each node is merkle-chained to its predecessors for tamper
@@ -33,7 +33,7 @@ data Invoice : billing v1 {
     merkle_hash: bytes(32),
 }
     store graph
-    govern lex global/org/polylabs/billing/history/invoice
+    govern lex global/org/polyqlabs/billing/history/invoice
     cortex {
         redact [blinded_token]
         infer on_write
@@ -48,7 +48,7 @@ data InvoiceLineItem : billing v1 {
     amount_minor: u64,
 }
     store kv
-    govern lex global/org/polylabs/billing/history/lineitem
+    govern lex global/org/polyqlabs/billing/history/lineitem
     cortex {
         redact []
         infer on_write
@@ -66,7 +66,7 @@ data Payment : billing v1 {
     merkle_hash: bytes(32),
 }
     store graph
-    govern lex global/org/polylabs/billing/history/payment
+    govern lex global/org/polyqlabs/billing/history/payment
     cortex {
         redact [blinded_token, settlement_id]
         infer on_write
@@ -83,7 +83,7 @@ data Credit : billing v1 {
     merkle_hash: bytes(32),
 }
     store graph
-    govern lex global/org/polylabs/billing/history/credit
+    govern lex global/org/polyqlabs/billing/history/credit
     cortex {
         redact [blinded_token]
         infer on_write
@@ -143,7 +143,7 @@ circuit issue_invoice(
     line_items: list<InvoiceLineItem>,
     signing_sk: bytes(4896)
 ) -> Invoice
-    lex global/org/polylabs/billing/history
+    lex global/org/polyqlabs/billing/history
     @precision D
     @observe metrics: [invoices_issued, invoice_total_amount, line_item_count]
     monitor "invoice_volume" { invoices_issued < 100000 per 86400s }
@@ -198,7 +198,7 @@ circuit record_payment(
     settlement_id: bytes(32),
     signing_sk: bytes(4896)
 ) -> Payment
-    lex global/org/polylabs/billing/history
+    lex global/org/polyqlabs/billing/history
     @precision D
     @observe metrics: [payments_recorded, payment_total_amount, payment_by_token_type]
     monitor "payment_volume" { payments_recorded < 100000 per 86400s }
@@ -250,7 +250,7 @@ circuit apply_credit(
     invoice_id: bytes(32),
     signing_sk: bytes(4896)
 ) -> Credit
-    lex global/org/polylabs/billing/history
+    lex global/org/polyqlabs/billing/history
     @precision C
     @observe metrics: [credits_applied, credit_total_amount]
     monitor "credit_rate" { credits_applied < 1000 per 86400s }
@@ -290,7 +290,7 @@ circuit apply_credit(
 }
 
 circuit query_invoice_payments(invoice_id: bytes(32)) -> list<Payment>
-    lex global/org/polylabs/billing/history
+    lex global/org/polyqlabs/billing/history
     @precision B
     @observe metrics: [payment_queries]
     invariant "invoice_exists" { eslite_exists("invoices", invoice_id) }
@@ -342,7 +342,7 @@ test golden "issue_invoice_basic" {
         line_items: [
             InvoiceLineItem {
                 product_id: hex("bb" * 16),
-                description: "Poly Files Premium — March 2026",
+                description: "Q Files Premium — March 2026",
                 quantity: 1,
                 unit_price_minor: 999900,
                 amount_minor: 999900,

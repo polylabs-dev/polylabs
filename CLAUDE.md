@@ -1,14 +1,14 @@
-# Poly Labs Central
+# PolyQ Labs Central
 
-**GitHub**: [polylabs-dev/polylabs](https://github.com/polylabs-dev/polylabs)
+**GitHub**: [polylabs-dev/polyqlabs](https://github.com/polylabs-dev/polyqlabs)
 **Platform**: eStream v0.22.0
-**Depends on**: PolyKit v0.4.0, eStream graph/DAG constructs
+**Depends on**: QKit v0.4.0, eStream graph/DAG constructs
 
 100% FastLang. No hand-written Rust.
 
 ## Purpose
 
-Central monorepo for Poly Labs: backend services (gateway, billing, enterprise admin), and the unified console. All logic lives in FastLang circuits compiled via FLIR codegen.
+Central monorepo for PolyQ Labs: backend services (gateway, billing, enterprise admin), and the unified console. All logic lives in FastLang circuits compiled via FLIR codegen.
 
 > **Note**: `crates/`, `sdks/`, and `console/` directories are legacy scaffolding superseded by FLIR codegen. All backend services, SDKs, and console functionality are now produced by FL circuit compilation.
 
@@ -34,7 +34,7 @@ This repo enforces the zero-linkage privacy architecture. The billing system use
 | Gateway | `gateway_auth` | SPARK auth, `constant_time`, `fuzz_target` |
 | Gateway | `gateway_rate_limit` | Two-tier rate limiting, `@guard(block_on: global_rate_exceeded)` |
 | Billing | `billing_subscription` | `state_machine subscription_tier` (Free/Premium/Pro/Enterprise/Cancelled) |
-| Billing | `billing_metering` | 8D metering aggregation, composes PolyKit metering |
+| Billing | `billing_metering` | 8D metering aggregation, composes QKit metering |
 | Billing | `billing_blinded` | Blinded payment verification, `constant_time`, `no_identity_leak` safety |
 | Billing | `billing_settlement` | `state_machine settlement_fsm`, L2 multi-token (USDC/SOL/cbBTC) |
 | Admin | `admin_rbac` | `graph admin_role_graph`, 4 platform roles, CSR storage |
@@ -55,7 +55,7 @@ data X : namespace v1 {
     field: type,
 }
     store kv|graph
-    govern lex esn/global/org/polylabs/...
+    govern lex esn/global/org/polyqlabs/...
     cortex { redact [...], infer on_write, on_anomaly alert "team" }
 ```
 
@@ -64,7 +64,7 @@ Every circuit must have: `lex`, `precision`, `observe metrics`, at least 1 `inva
 ## Platform
 
 - eStream v0.22.0
-- PolyKit v0.4.0
+- QKit v0.4.0
 - FLIR codegen (FastLang → FLIR → Rust/WASM)
 - ML-KEM-1024, ML-DSA-87, SHA3-256
 - 8-Dimension metering

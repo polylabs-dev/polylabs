@@ -1,7 +1,7 @@
 // Gateway Auth — SPARK authentication and per-product session establishment
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/gateway/auth
+//   esn/global/org/polyqlabs/gateway/auth
 //   Each product derives its own SPARK identity via isolated HKDF context.
 //   The gateway authenticates the SPARK challenge-response and establishes a
 //   session scoped to exactly one product namespace. No cross-product session
@@ -11,7 +11,7 @@
 //   All authentication paths are constant-time to prevent timing side channels.
 //   Fuzz targets exercise the challenge-response and session establishment paths.
 
-import polykit_identity
+import qkit_identity
 
 // ── Data ────────────────────────────────────────────────────────
 
@@ -25,7 +25,7 @@ data AuthSession : gateway v1 {
     revoked: bool,
 }
     store kv
-    govern lex global/org/polylabs/gateway/auth/session
+    govern lex global/org/polyqlabs/gateway/auth/session
     cortex {
         redact [spark_pubkey]
         infer on_write
@@ -41,7 +41,7 @@ data AuthChallenge : gateway v1 {
     consumed: bool,
 }
     store kv
-    govern lex global/org/polylabs/gateway/auth/challenge
+    govern lex global/org/polyqlabs/gateway/auth/challenge
     cortex {
         redact [nonce]
         infer on_write
@@ -65,7 +65,7 @@ circuit authenticate_spark(
     signature: bytes(4627),
     lex_namespace: string
 ) -> AuthSession
-    lex global/org/polylabs/gateway/auth
+    lex global/org/polyqlabs/gateway/auth
     @precision D
     constant_time true
     @observe metrics: [auth_attempts, auth_successes, auth_failures, auth_latency_us]
@@ -104,7 +104,7 @@ circuit establish_session(
     spark_pubkey: bytes(2592),
     lex_namespace: string
 ) -> AuthChallenge
-    lex global/org/polylabs/gateway/auth
+    lex global/org/polyqlabs/gateway/auth
     @precision C
     constant_time true
     @observe metrics: [challenges_issued, challenge_latency_us]
@@ -130,7 +130,7 @@ circuit establish_session(
 }
 
 circuit revoke_session(session_id: bytes(32)) -> bool
-    lex global/org/polylabs/gateway/auth
+    lex global/org/polyqlabs/gateway/auth
     @precision C
     @observe metrics: [sessions_revoked]
     invariant "session_exists" { eslite_exists("sessions", session_id) }
@@ -169,8 +169,8 @@ test golden "establish_and_authenticate" {
     setup {
         eslite_insert("route_configs", hex("aa" * 16), RouteConfig {
             product_id: hex("aa" * 16),
-            product_name: "polyfiles",
-            lex_namespace: "global/org/polylabs/files",
+            product_name: "qfiles",
+            lex_namespace: "global/org/polyqlabs/files",
             wire_protocol_version: 1,
             max_payload_bytes: 67108864,
             enabled: true,
@@ -182,7 +182,7 @@ test golden "establish_and_authenticate" {
     input {
         product_id: hex("aa" * 16)
         spark_pubkey: hex("dd" * 2592)
-        lex_namespace: "global/org/polylabs/files"
+        lex_namespace: "global/org/polyqlabs/files"
     }
     assert {
         challenge.consumed == false
@@ -198,7 +198,7 @@ test golden "revoke_session_basic" {
             session_id: hex("ee" * 32),
             product_id: hex("aa" * 16),
             spark_pubkey: hex("dd" * 2592),
-            lex_namespace: "global/org/polylabs/files",
+            lex_namespace: "global/org/polyqlabs/files",
             established_at: 1000,
             expires_at: 87400,
             revoked: false,

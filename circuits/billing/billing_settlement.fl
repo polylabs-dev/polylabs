@@ -1,7 +1,7 @@
 // Billing Settlement — L2 multi-token settlement (USDC, SOL, cbBTC)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/billing/settlement
+//   esn/global/org/polyqlabs/billing/settlement
 //   Settlements are processed through an FSM: Pending → Processing →
 //   Settled | Failed. Multi-token support covers USDC (primary), SOL
 //   (native), and cbBTC (Bitcoin-backed). Each settlement is
@@ -50,7 +50,7 @@ data Settlement : billing v1 {
     updated_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/billing/settlement
+    govern lex global/org/polyqlabs/billing/settlement
     cortex {
         redact [blinded_token, destination_address, l2_tx_hash]
         infer on_write
@@ -67,7 +67,7 @@ data SettlementResult : billing v1 {
     signature: bytes(4627),
 }
     store kv
-    govern lex global/org/polylabs/billing/settlement/result
+    govern lex global/org/polyqlabs/billing/settlement/result
     cortex {
         redact [l2_confirmation, signature]
         infer on_write
@@ -88,7 +88,7 @@ circuit initiate_settlement(
     currency_decimals: u8,
     destination_address: bytes(32)
 ) -> Settlement
-    lex global/org/polylabs/billing/settlement
+    lex global/org/polyqlabs/billing/settlement
     @precision D
     @observe metrics: [settlements_initiated, settlement_amount_total, token_type_distribution]
     monitor "settlement_volume" { settlements_initiated < 10000 per 3600s }
@@ -126,7 +126,7 @@ circuit finalize_settlement(
     error_reason: string,
     signing_sk: bytes(4896)
 ) -> SettlementResult
-    lex global/org/polylabs/billing/settlement
+    lex global/org/polyqlabs/billing/settlement
     @precision D
     constant_time true
     @observe metrics: [settlements_finalized, settlements_succeeded, settlements_failed, gas_consumed]

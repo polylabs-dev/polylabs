@@ -3,7 +3,7 @@
 > **Version**: 0.1.0
 > **Status**: Active
 > **Platform**: eStream v0.22.0
-> **Lex Root**: `polylabs/backend`
+> **Lex Root**: `polyqlabs/backend`
 
 ---
 
@@ -11,7 +11,7 @@
 
 The PolyLabs backend exposes 12 FastLang circuits across four subsystems (gateway, billing, admin, graphs). This spec covers two integration layers:
 
-1. **App Graph** — registers the 12 modules into the Stratum module graph with typed dependency edges, cross-graph bridges to PolyKit and eStream primitives, and governance observation edges.
+1. **App Graph** — registers the 12 modules into the Stratum module graph with typed dependency edges, cross-graph bridges to QKit and eStream primitives, and governance observation edges.
 2. **Cognitive Engine** — defines 3 meaning domains, 1 noise filter configuration, and 2 SME panels so the backend feeds operational intelligence into the CE pipeline.
 
 ### Design Goals
@@ -20,9 +20,9 @@ The PolyLabs backend exposes 12 FastLang circuits across four subsystems (gatewa
 |------|-----------|
 | Unified module registry | All 12 modules registered in a single `CsrStorage` graph via `module_graph_add_module` |
 | Typed dependency tracking | 18 `EDGE_REQUIRES` edges encode the backend's internal dependency DAG |
-| Cross-graph composability | 4 `EDGE_BRIDGE_TO` edges to PolyKit metering, RBAC, SPARK, and scatter-cas |
+| Cross-graph composability | 4 `EDGE_BRIDGE_TO` edges to QKit metering, RBAC, SPARK, and scatter-cas |
 | Governance observability | 12 `EDGE_GOVERNANCE_OBSERVE` edges — one per module |
-| Per-domain CE isolation | Each meaning domain scoped under `polylabs/backend/cognitive` lex |
+| Per-domain CE isolation | Each meaning domain scoped under `polyqlabs/backend/cognitive` lex |
 | Noise suppression | Health checks, internal probes, and synthetic traffic filtered before CE ingestion |
 
 ---
@@ -37,7 +37,7 @@ The PolyLabs backend exposes 12 FastLang circuits across four subsystems (gatewa
 | | `gateway_auth` | Head | Premium | SPARK auth verification, constant-time |
 | | `gateway_rate_limit` | Head | Premium | Two-tier rate limiting (global + per-product) |
 | **Billing** | `billing_subscription` | Backend | Standard | Tier FSM: Free/Premium/Pro/Enterprise/Cancelled |
-| | `billing_metering` | Backend | Standard | 8D metering aggregation via PolyKit |
+| | `billing_metering` | Backend | Standard | 8D metering aggregation via QKit |
 | | `billing_blinded` | Backend | Premium | Blinded payment verification, no identity leak |
 | | `billing_settlement` | Backend | Premium | L2 settlement FSM, multi-token |
 | **Admin** | `admin_rbac` | Backend | Standard | Platform RBAC graph, 4 roles |
@@ -66,8 +66,8 @@ tenant_graph → billing_subscription
 
 | Source Module | Target Lex | Target Module | Bridge Type |
 |---------------|-----------|---------------|-------------|
-| `billing_metering` | `polykit/metering` | `polykit_metering` | metering_aggregation |
-| `admin_rbac` | `polykit/rbac` | `polykit_rbac` | role_composition |
+| `billing_metering` | `qkit/metering` | `qkit_metering` | metering_aggregation |
+| `admin_rbac` | `qkit/rbac` | `qkit_rbac` | role_composition |
 | `gateway_auth` | `core/identity/spark` | `spark_verify` | auth_verification |
 | `billing_blinded` | `core/storage/scatter` | `scatter_cas` | blinded_token_storage |
 
@@ -106,8 +106,8 @@ tenant_graph → billing_subscription
 
 | File | Lines | Contents |
 |------|-------|----------|
-| `circuits/fl/polylabs_app_graph.fl` | ~250 | 12 module definitions, graph registration, bridge edges, governance edges, properties, golden tests |
-| `circuits/fl/polylabs_meaning.fl` | ~150 | 3 domain data types, noise filter config, 2 SME panel types, registration circuits, golden tests |
+| `circuits/fl/polyqlabs_app_graph.fl` | ~250 | 12 module definitions, graph registration, bridge edges, governance edges, properties, golden tests |
+| `circuits/fl/polyqlabs_meaning.fl` | ~150 | 3 domain data types, noise filter config, 2 SME panel types, registration circuits, golden tests |
 
 ---
 
@@ -116,9 +116,9 @@ tenant_graph → billing_subscription
 | Property | Type | Assertion |
 |----------|------|-----------|
 | `all_modules_registered` | Safety | All 12 modules findable by name after registration |
-| `graph_registration_completes` | Liveness | `num_nodes >= 12` after `polylabs_app_graph_register` |
+| `graph_registration_completes` | Liveness | `num_nodes >= 12` after `polyqlabs_app_graph_register` |
 | `register_all_12_modules` | Golden test | Node count = 12, spot-check 3 modules |
-| `bridge_edges_to_polykit` | Golden test | Bridge registration increases node/edge count |
+| `bridge_edges_to_qkit` | Golden test | Bridge registration increases node/edge count |
 | `governance_edges_all_modules` | Golden test | Governance registration adds >= 12 edges |
 | `full_ce_pipeline_setup` | Golden test | All 3 domains + filter + 2 panels initialize |
 
@@ -127,7 +127,7 @@ tenant_graph → billing_subscription
 ## References
 
 - eStream MCP App Graph: `estream/circuits/core/intelligence/mcp/mcp_app_graph.fl`
-- PolyKit CE Spec: `polykit/specs/POLYKIT_CE_APP_GRAPH_SPEC.md`
-- PolyKit Cognitive: `polykit/circuits/fl/polykit_cognitive.fl`
-- PolyKit Noise Filter: `polykit/circuits/fl/polykit_noise_filter.fl`
-- PolyKit SME: `polykit/circuits/fl/polykit_sme.fl`
+- QKit CE Spec: `qkit/specs/POLYKIT_CE_APP_GRAPH_SPEC.md`
+- QKit Cognitive: `qkit/circuits/fl/qkit_cognitive.fl`
+- QKit Noise Filter: `qkit/circuits/fl/qkit_noise_filter.fl`
+- QKit SME: `qkit/circuits/fl/qkit_sme.fl`
